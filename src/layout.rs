@@ -327,6 +327,26 @@ impl<T> LayoutNode<T> {
             }
         }
     }
+
+    /// Collect all pane contents as mutable references in a single traversal
+    /// This is O(n) instead of O(n²) when iterating all panes
+    pub fn collect_contents_mut(&mut self) -> Vec<(PaneId, &mut T)> {
+        let mut result = Vec::new();
+        self.collect_contents_mut_inner(&mut result);
+        result
+    }
+
+    fn collect_contents_mut_inner<'a>(&'a mut self, out: &mut Vec<(PaneId, &'a mut T)>) {
+        match self {
+            LayoutNode::Leaf { id, content } => {
+                out.push((*id, content));
+            }
+            LayoutNode::Split { first, second, .. } => {
+                first.collect_contents_mut_inner(out);
+                second.collect_contents_mut_inner(out);
+            }
+        }
+    }
 }
 
 // ============================================================================

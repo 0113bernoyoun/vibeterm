@@ -598,44 +598,42 @@ impl VibeTermApp {
 
     /// Handle IME (Input Method Editor) events for Korean/Japanese/Chinese input
     fn handle_ime_events(&mut self, ctx: &Context) {
+        // Early check: only clone events if there are any IME events to process
+        let has_ime_events = ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Ime(_))));
+        if !has_ime_events && !self.ime_composing {
+            return; // No IME events and not composing, skip processing
+        }
+
         let events = ctx.input(|i| i.events.clone());
 
-        // Track if we're in IME composition mode
-        let mut in_ime_composition = false;
-
         for event in &events {
-            match event {
-                Event::Ime(ime_event) => {
-                    match ime_event {
-                        ImeEvent::Enabled => {
-                            in_ime_composition = true;
-                            self.ime_composing = true;
-                        }
-                        ImeEvent::Preedit(text) => {
-                            in_ime_composition = !text.is_empty();
-                            self.ime_composing = in_ime_composition;
-                        }
-                        ImeEvent::Commit(text) => {
-                            log::info!("IME Commit: '{}'", text);
-                            // Send committed text to terminal
-                            if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
-                                let focused = ws.focused_pane;
-                                if let Some(content) = ws.get_content_mut(focused) {
-                                    if let TabContent::Terminal(terminal) = content {
-                                        terminal.backend.process_command(
-                                            BackendCommand::Write(text.clone().into_bytes())
-                                        );
-                                    }
+            if let Event::Ime(ime_event) = event {
+                match ime_event {
+                    ImeEvent::Enabled => {
+                        self.ime_composing = true;
+                    }
+                    ImeEvent::Preedit(text) => {
+                        self.ime_composing = !text.is_empty();
+                    }
+                    ImeEvent::Commit(text) => {
+                        log::info!("IME Commit: '{}'", text);
+                        // Send committed text to terminal
+                        if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
+                            let focused = ws.focused_pane;
+                            if let Some(content) = ws.get_content_mut(focused) {
+                                if let TabContent::Terminal(terminal) = content {
+                                    terminal.backend.process_command(
+                                        BackendCommand::Write(text.clone().into_bytes())
+                                    );
                                 }
                             }
-                            self.ime_composing = false;
                         }
-                        ImeEvent::Disabled => {
-                            self.ime_composing = false;
-                        }
+                        self.ime_composing = false;
+                    }
+                    ImeEvent::Disabled => {
+                        self.ime_composing = false;
                     }
                 }
-                _ => {}
             }
         }
 
@@ -915,11 +913,13 @@ impl VibeTermApp {
             .root
             .compute_layout(available_rect, DIVIDER_WIDTH, &mut path, &mut layout);
 
-        // Check for click to focus pane (on click release)
-        let clicked_primary = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
-        let button_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-        let pointer_pos = ui.input(|i| i.pointer.latest_pos());
-        let pointer_released = ui.input(|i| i.pointer.any_released());
+        // Batch input state reads for efficiency
+        let (clicked_primary, button_pressed, pointer_pos, pointer_released) = ui.input(|i| (
+            i.pointer.button_clicked(egui::PointerButton::Primary),
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.pointer.latest_pos(),
+            i.pointer.any_released(),
+        ));
 
         if clicked_primary {
             if let Some(pos) = pointer_pos {
@@ -1060,13 +1060,17 @@ impl VibeTermApp {
             }
         }
 
-        // Render panes
-        // We need to collect pane info first to avoid borrow issues
-        let pane_info: Vec<(PaneId, egui::Rect)> = layout.pane_rects.iter()
-            .map(|(id, rect)| (*id, *rect))
-            .collect();
+        // Render panes - O(n) single traversal instead of O(n²)
+        // Collect all pane contents in one traversal, then render each
+        let contents = self.workspaces[self.active_workspace]
+            .root
+            .collect_contents_mut();
 
-        for (pane_id, rect) in pane_info {
+        for (pane_id, content) in contents {
+            // Look up rect from computed layout (O(1) HashMap lookup)
+            let Some(&rect) = layout.pane_rects.get(&pane_id) else {
+                continue;
+            };
             let is_focused = pane_id == focused_pane;
 
             // Focus border
@@ -1088,37 +1092,37 @@ impl VibeTermApp {
 
             // Render pane content
             let inner_rect = rect.shrink(2.0);
-            ui.allocate_new_ui(
-                egui::UiBuilder::new().max_rect(inner_rect),
-                |ui| {
-                    if let Some(content) = self.workspaces[self.active_workspace]
-                        .root
-                        .get_content_mut(pane_id)
-                    {
-                        match content {
-                            TabContent::Terminal(terminal) => {
-                                TerminalView::new(ui, &mut terminal.backend)
-                                    .set_theme(terminal_theme.clone())
-                                    .set_focus(is_focused)
-                                    .set_size(inner_rect.size())
-                                    .ui(ui);
-                            }
-                            TabContent::FileViewer { content, .. } => {
-                                ui.painter().rect_filled(inner_rect, 0.0, self.theme.background);
-                                egui::ScrollArea::vertical()
-                                    .id_salt(format!("file_scroll_{}", pane_id.0))
-                                    .show(ui, |ui| {
-                                        ui.add(egui::Label::new(
-                                            egui::RichText::new(content.as_str())
-                                                .font(theme::mono_font(12.0))
-                                                .color(self.theme.text)
-                                        ).wrap());
-                                    });
-                            }
-                        }
-                    }
-                },
-            );
+            match content {
+                TabContent::Terminal(terminal) => {
+                    ui.allocate_new_ui(
+                        egui::UiBuilder::new().max_rect(inner_rect),
+                        |ui| {
+                            TerminalView::new(ui, &mut terminal.backend)
+                                .set_theme(terminal_theme.clone())
+                                .set_focus(is_focused)
+                                .set_size(inner_rect.size())
+                                .ui(ui);
+                        },
+                    );
+                }
+                TabContent::FileViewer { content: file_content, .. } => {
+                    ui.painter().rect_filled(inner_rect, 0.0, self.theme.background);
+                    ui.allocate_new_ui(
+                        egui::UiBuilder::new().max_rect(inner_rect),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt(format!("file_scroll_{}", pane_id.0))
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(file_content.as_str())
+                                            .font(theme::mono_font(12.0))
+                                            .color(self.theme.text)
+                                    ).wrap());
+                                });
+                        },
+                    );
+                }
+            }
         }
 
         // Render drag feedback overlay
@@ -1181,8 +1185,9 @@ impl eframe::App for VibeTermApp {
             self.show_preferences_window(ctx);
         }
 
-        // Request continuous repaint for terminal updates
-        ctx.request_repaint();
+        // Request repaint at reasonable interval for terminal updates and cursor blink
+        // 50ms = 20fps idle rate, sufficient for cursor blink without burning CPU
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
         // Tab bar (top)
         TopBottomPanel::top("tab_bar")
