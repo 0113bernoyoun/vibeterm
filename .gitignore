@@ -1,0 +1,37 @@
+# Build artifacts
+/target
+
+# IDE and tools
+.DS_Store
+.claude/
+.omc/
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Screenshots (development)
+*.png
+
+# Debug scripts
+run_debug.sh
+
+# Development notes
+DEBUG_ANALYSIS.md
+KEYBOARD_DEBUG.md
+COMPLETION_SUMMARY.md
+prompts.md
+architecture_candidate.md
+feature-list.md
+SECURITY_FIXES.md
+
+# Backup directories (old implementations)
+src_iced_backup/
+src_tui_backup/
+src_wgpu_backup/

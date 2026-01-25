@@ -1,0 +1,40 @@
+[package]
+name = "vibeterm"
+version = "0.4.0"
+edition = "2021"
+description = "A GPU-accelerated terminal emulator with TUI aesthetics"
+
+[dependencies]
+# GUI Framework (egui + eframe)
+egui = "0.31"
+eframe = { version = "0.31", default-features = false, features = [
+    "default_fonts",
+    "glow",          # OpenGL backend (더 빠른 시작)
+    "persistence",   # 창 위치/크기 저장
+] }
+
+# Terminal Widget (Alacritty backend)
+egui_term = "0.1"
+
+# Async runtime for PTY
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "io-util", "time"] }
+
+# Utilities
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+dirs = "5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Native macOS menu bar
+muda = "0.15"
+
+[profile.dev]
+opt-level = 1  # 개발 빌드도 약간 최적화 (성능 테스트용)
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
