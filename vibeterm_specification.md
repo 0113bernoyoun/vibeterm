@@ -1,12 +1,23 @@
 # VibeTerm 상세 스펙 문서 (PRD)
 
 ## 1. 프로젝트 개요
-- **명칭:** VibeTerm (AI-Native Tiling Terminal)
+
+- **명칭:** VibeTerm (The Terminal for Vibe Coding)
 - **개발 환경:** macOS (Apple Silicon 및 Intel)
-- **핵심 목표:** 멀티 프로젝트/터미널 타일링 레이아웃 구현 및 가벼운 네이티브 퍼포먼스 확보
 - **현재 버전:** v0.4.0 (egui_term 기반)
 
+### 핵심 철학 (Core Philosophy)
+
+**VibeTerm**은 단순히 명령어를 입력하는 창을 넘어, **'바이브 코딩(Vibe Coding)'**에 최적화된 차세대 터미널 에뮬레이터입니다. Claude Code, Codex와 같은 AI CLI 도구를 사용하는 개발자가 터미널 환경을 떠나지 않고도 IDE 이상의 생산성을 경험하도록 설계되었습니다.
+
+* **The Orchestrator:** 터미널은 단순한 텍스트 출력을 넘어, AI와 개발자가 공유하는 지능형 캔버스가 되어야 합니다.
+* **Environment Control:** AI 도구가 실행되는 부모 환경(Terminal Emulator)을 지능화하여 컨텍스트를 주입하고 결과를 시각화합니다.
+
+---
+
 ## 2. 기술 스택 (Tech Stack)
+
+### 현재 스택
 
 | 구성요소 | 라이브러리 | 버전 | 역할 |
 |---------|-----------|------|------|
@@ -18,14 +29,23 @@
 | 비동기 | tokio | 1.0 | PTY 비동기 처리 |
 | 로깅 | log + env_logger | 0.4 / 0.11 | 디버깅 로그 |
 
+### 추가 예정
+
+| 구성요소 | 라이브러리 | 역할 |
+|---------|-----------|------|
+| 파일 감시 | notify | 파일 시스템 변경 실시간 감지 |
+| MCP 통신 | (TBD) | Model Context Protocol 지원 |
+
 ### 이전 시도 (폐기됨)
 - ~~Iced 기반~~: 한글 입력/렌더링 성능 이슈
 - ~~ratatui TUI 기반~~: iTerm2 등 호스트 터미널과 키보드 충돌
 - ~~wgpu 직접 렌더링~~: 복잡도 높음, egui_term으로 대체
 
+---
+
 ## 3. 현재 아키텍처
 
-### 레이아웃 구조
+### 레이아웃 구조 (현재)
 ```
 +------------------------------------------+
 | [macOS Native Menu Bar]                   |   <- System Menu
@@ -42,6 +62,26 @@
 +--------+---------------------------------+
 |  [Status Bar]  VibeTerm │ Panes: 2 │ ... |   <- 18px
 +------------------------------------------+
+```
+
+### 목표 레이아웃 (3-Pane Layout)
+```
++----------------------------------------------------------+
+| [macOS Native Menu Bar]                                    |
++----------------------------------------------------------+
+|  [Tab Bar]    ▶1 shell │ 2 project   +         [Cmd+P]    |
++------------+---------------------------+------------------+
+| [Smart     |   [Terminal Area]         | [AI Inspector]   |
+|  Sidebar]  |   +----------+----------+ |                  |
+|            |   | Pane 1  ║ Pane 2   | | Thought Trace    |
+| Pinned     |   | (focus) ║          | | ─────────────    |
+| Files      |   +=========+----------+ | AI 추론 과정...   |
+|            |   Ghost Text Overlay     |                  |
+| Git Status |                          | Diff Preview     |
+|            |   [Aura Effect Border]   | Token Usage      |
++------------+---------------------------+------------------+
+|  [Status Bar]  VibeTerm │ AI: Active │ Tokens: 1.2k      |
++----------------------------------------------------------+
 ```
 
 ### 상태 관리 구조
@@ -68,27 +108,11 @@ VibeTermApp
 └── dragging_divider: Option<...>    // 디바이더 드래그 상태
 ```
 
-### 렌더링 파이프라인
-1. **egui Frame**: eframe이 OpenGL(glow) 컨텍스트 관리
-2. **Panel Layout**: TopBottomPanel(탭바, 상태바), SidePanel(사이드바), CentralPanel(터미널)
-3. **Terminal Rendering**: egui_term이 Alacritty 백엔드로 터미널 렌더링
-4. **UI Widgets**: egui Button, Label 등으로 TUI 스타일 UI
-
-### 테마 시스템 (Dark Brown - 사용자 정의 가능)
-| 요소 | 기본 색상 | Hex |
-|------|----------|-----|
-| Background | 다크 브라운 | `#2E1A16` |
-| Surface | 밝은 브라운 | `#3A241E` |
-| Primary | 코랄 | `#E07A5F` |
-| Text | 크림 | `#F4F1DE` |
-| Text Dim | 회색 | `#A0968A` |
-| Border | 브라운 | `#4A2E28` |
-
-설정 파일: `~/.config/vibeterm/config.toml`
+---
 
 ## 4. 구현 상태
 
-### ✅ 완료된 기능
+### ✅ 완료된 기능 (v0.4.0)
 
 #### 핵심 터미널 기능
 - [x] **egui_term 기반 터미널 렌더링**
@@ -106,51 +130,195 @@ VibeTermApp
 
 #### UI/UX
 - [x] **macOS 네이티브 메뉴바** (muda 크레이트)
-  - VibeTerm, File, Edit, View, Shell, Window, Help 메뉴
-  - 메뉴 항목에 키보드 단축키 표시
-- [x] **TUI 스타일 UI**
-  - Box-drawing 문자 (─, │, ┌, ┐ 등)
-  - 모노스페이스 폰트
-  - ASCII 스타일 아이콘 ([+], [-], ├──)
+- [x] **TUI 스타일 UI** (Box-drawing 문자)
 - [x] **사이드바 파일 탐색기**
-  - 디렉토리 펼치기/접기
-  - 파일 선택 하이라이트
-  - **더블클릭으로 파일을 새 탭으로 열기**
-- [x] **설정 창** (Cmd+, 또는 메뉴)
-  - 테마 색상 커스터마이징
-  - TOML 파일 저장/로드
+- [x] **설정 창** (Cmd+,)
+- [x] **TOML 기반 테마 커스터마이징**
 
 #### 폰트 및 국제화
-- [x] **CJK 폰트 지원**
-  - macOS: Apple SD Gothic Neo 자동 로드
-  - Linux: Noto Sans CJK 자동 로드
-  - 폴백 폰트로 한글/일본어/중국어 표시
-- [x] **IME 지원 시도**
-  - `ViewportCommand::IMEAllowed(true)` 활성화
-  - IME 이벤트 핸들링 구현
+- [x] **CJK 폰트 지원** (한글/일본어/중국어)
+- [x] **IME 지원** (ViewportCommand::IMEAllowed)
 
-### ⚠️ 알려진 제한사항
+---
 
-#### 한글 IME 이슈
-- **현상**: 한글 입력 시 자음/모음이 분리되어 표시 (예: ㅎㅏㄴㄱㅡㄹ)
-- **원인**: winit/egui의 네이티브 IME 지원 한계
-  - [winit#1497](https://github.com/rust-windowing/winit/issues/1497)
-  - [egui#248](https://github.com/emilk/egui/issues/248)
-- **영향받는 터미널**: Alacritty도 동일 이슈 있음
-- **대안**:
-  1. WezTerm 기반으로 전환 (자체 UI 포기 필요)
-  2. macOS Cocoa API 직접 사용 (전체 재작성 필요)
-  3. 현재 상태 유지 (영문/숫자만 정상)
+## 5. Vibe Coding 기능 로드맵
 
-### 🚧 개발 예정
-- [ ] 한글 IME 완전 지원 (아키텍처 결정 필요)
+### Phase 1: 기반 기능 완성 (v0.5.0)
+
+#### 터미널 기본 기능
 - [ ] 수직 분할 (Cmd+Shift+D)
 - [ ] 스크롤백 버퍼
 - [ ] 텍스트 선택 및 복사
 - [ ] 탭 드래그 앤 드롭 재정렬
 - [ ] 새 창 열기 (Cmd+Shift+N)
+- [ ] Command Palette (Cmd+P)
 
-## 5. 키보드 단축키
+#### UI 개선
+- [ ] 배경 투명도 (Opacity) 설정
+- [ ] 배경 흐림 효과 (Blur)
+- [ ] Active Line Highlight
+- [ ] 커서 스타일 설정 (Block, Bar, Underline)
+
+### Phase 2: 지능형 컨텍스트 관리 (v0.6.0)
+
+#### 🧠 Smart Context Management
+- [ ] **Auto-Context Pinning**
+  - 현재 작업 중인 파일 및 디렉토리 구조를 AI 세션에 자동 태깅
+  - AI가 현재 맥락을 즉시 파악
+- [ ] **PTY Interception**
+  - PTY 스트림 실시간 파싱
+  - 에러 로그 및 특정 패턴 감지
+  - 감지된 이벤트를 UI에 반영
+- [ ] **Semantic Search**
+  - `@` 키워드로 프로젝트 내 심볼(함수, 클래스) 검색
+  - 프롬프트에 즉시 포함
+
+#### Smart Sidebar 업그레이드
+- [ ] **Pinned Files 표시**
+  - AI가 현재 참고 중인 파일 하이라이트
+- [ ] **Git Status 통합**
+  - 변경된 파일 시각적 표시
+- [ ] **File Watcher (`notify` 크레이트)**
+  - 파일 시스템 변경 실시간 감지
+  - AI 작업 결과 UI 자동 업데이트
+
+### Phase 3: 실시간 코드 적용 (v0.7.0)
+
+#### ⚡ Actionable Output
+- [ ] **Ghost Text & Diff Preview**
+  - AI 제안 변경사항을 반투명 오버레이로 시각화
+  - 별도 패널에서 상세 Diff 표시
+- [ ] **One-tap Apply**
+  - `y` 키로 제안 코드 즉시 적용
+  - git commit 연동 옵션
+
+#### AI Inspector 패널 (Right Panel)
+- [ ] **Thought Trace**
+  - AI의 추론 과정 실시간 표시
+- [ ] **상세 Diff View**
+- [ ] **토큰 사용량 모니터**
+- [ ] **실시간 비용 리포트**
+
+### Phase 4: 멀티 세션 오케스트레이션 (v0.8.0)
+
+#### 🤝 Multi-Session / MCP
+- [ ] **Claude Event Bus (MCP)**
+  - Model Context Protocol 활용
+  - 여러 터미널 세션 간 상태/이벤트 공유
+- [ ] **Global Context Dashboard**
+  - 여러 패널의 AI 작업 상태 통합 모니터링
+- [ ] **Smart Handoff**
+  - 세션 A의 맥락을 세션 B로 즉시 전송
+  - 다른 모델/작업 영역 간 컨텍스트 이전
+
+### Phase 5: Vibe UI 완성 (v1.0.0)
+
+#### 🎨 The "Vibe" UI
+- [ ] **Aura Effect**
+  - AI 작업 중 터미널 테두리에 그라데이션 애니메이션
+- [ ] **Smooth Animations**
+  - 패널 전환, 탭 전환 애니메이션
+- [ ] **Customizable Themes**
+  - AI 전용 색상 (Aura, Highlight, Selection)
+
+---
+
+## 6. 설정 명세 (Preferences Specification)
+
+### 현재 구현된 설정
+
+```toml
+[theme]
+background = "#2E1A16"
+surface = "#3A241E"
+primary = "#E07A5F"
+text = "#F4F1DE"
+text_dim = "#A0968A"
+border = "#4A2E28"
+
+[font]
+family = "JetBrains Mono"
+size = 13.0
+```
+
+### 목표 설정 스펙
+
+#### ⚙️ 일반 및 외관 (General & Appearance)
+
+```toml
+[general]
+default_shell = "/bin/zsh"
+scrollback_lines = 10000
+initial_directory = "~"
+
+[font]
+family = "JetBrains Mono"
+size = 13.0
+line_height = 1.2
+ligatures = true
+
+[window]
+opacity = 1.0          # 0.0 - 1.0
+blur = false
+padding = 8
+
+[cursor]
+style = "block"        # block, bar, underline
+blink_speed = 500      # ms, 0 to disable
+```
+
+#### 🎨 색상 테마 (Color Schemes)
+
+```toml
+[theme]
+# Base colors
+background = "#2E1A16"
+surface = "#3A241E"
+primary = "#E07A5F"
+text = "#F4F1DE"
+text_dim = "#A0968A"
+border = "#4A2E28"
+
+# ANSI 16 colors
+black = "#2E1A16"
+red = "#E07A5F"
+green = "#81B29A"
+yellow = "#F2CC8F"
+blue = "#3D405B"
+magenta = "#B5838D"
+cyan = "#6D9DC5"
+white = "#F4F1DE"
+
+# Vibe special (AI 전용)
+aura_color = "#E07A5F"
+ai_text_highlight = "#81B29A"
+selection_color = "#3A241E"
+ghost_text_color = "#A0968A"
+```
+
+#### 🤖 AI/연동 설정 (AI Specifics)
+
+```toml
+[ai]
+enabled = true
+mcp_bus_path = "/tmp/vibeterm-mcp.sock"
+mcp_servers = ["claude", "codex"]
+
+[ai.cost]
+token_budget_limit = 100000     # daily limit
+warning_threshold = 0.8         # 80% 경고
+
+[ai.context]
+ignored_patterns = ["node_modules", ".git", "target"]
+watcher_debounce_ms = 100
+auto_pin_opened_files = true
+```
+
+---
+
+## 7. 키보드 단축키
+
+### 현재 구현됨
 
 | 단축키 | 기능 |
 |--------|------|
@@ -163,7 +331,20 @@ VibeTermApp
 | `Ctrl+Tab` | 다음 패널로 이동 |
 | `Ctrl+Shift+Tab` | 이전 패널로 이동 |
 
-## 6. 파일 구조
+### 추가 예정
+
+| 단축키 | 기능 |
+|--------|------|
+| `Cmd+Shift+D` | 수직 분할 |
+| `Cmd+Shift+N` | 새 창 |
+| `Cmd+P` | Command Palette |
+| `Cmd+Shift+P` | AI Command Palette |
+| `@` | Semantic Search (터미널 내) |
+| `y` | AI 제안 적용 |
+
+---
+
+## 8. 파일 구조
 
 ```
 src/
@@ -182,7 +363,26 @@ src/
 └── config.toml      # 사용자 설정 파일
 ```
 
-## 7. 빌드 및 실행
+### 추가 예정 구조
+
+```
+src/
+├── ai/
+│   ├── mod.rs           # AI 모듈
+│   ├── context.rs       # 컨텍스트 관리
+│   ├── mcp.rs           # MCP 통신
+│   └── inspector.rs     # AI Inspector 패널
+├── watcher/
+│   └── mod.rs           # 파일 감시 (notify)
+└── ui/
+    ├── command_palette.rs  # Cmd+P
+    ├── ghost_text.rs       # AI 제안 오버레이
+    └── ai_inspector.rs     # 우측 AI 패널
+```
+
+---
+
+## 9. 빌드 및 실행
 
 ```bash
 # 빌드
@@ -195,47 +395,33 @@ cargo run
 RUST_LOG=info cargo run 2>&1 | tee vibeterm.log
 ```
 
-## 8. 의존성 (Cargo.toml)
+---
 
-```toml
-[dependencies]
-egui = "0.31"
-eframe = { version = "0.31", features = ["glow", "persistence"] }
-egui_term = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
-muda = "0.15"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-anyhow = "1"
-log = "0.4"
-env_logger = "0.11"
-dirs = "5"
-```
+## 10. 알려진 제한사항
+
+### 한글 IME 이슈
+- **현상**: 일부 환경에서 한글 입력 시 자음/모음이 분리
+- **원인**: winit/egui의 네이티브 IME 지원 한계
+  - [winit#1497](https://github.com/rust-windowing/winit/issues/1497)
+  - [egui#248](https://github.com/emilk/egui/issues/248)
 
 ---
 
-## 9. 핸드오프 노트
+## 11. 핸드오프 노트
 
 ### 마지막 작업 상태 (2025-01-25)
-- ✅ **egui_term 마이그레이션 완료**: wgpu에서 egui+egui_term으로 전환
-- ✅ **네이티브 메뉴바 구현**: muda 크레이트로 macOS 메뉴바 추가
-- ✅ **패널 포커스 전환**: 클릭으로 분할 패널 간 포커스 전환
-- ✅ **디바이더 드래그**: 패널 크기 조절 가능
-- ✅ **파일 더블클릭**: 사이드바에서 파일을 새 탭으로 열기
-- ✅ **설정 시스템**: TOML 기반 테마 커스터마이징
-- ✅ **CJK 폰트 로드**: 시스템 한글 폰트 자동 로드
-- ⚠️ **한글 IME**: ViewportCommand::IMEAllowed 활성화했으나 winit 한계로 미완성
-
-### 한글 IME 해결을 위한 옵션
-
-| 옵션 | 장점 | 단점 |
-|------|------|------|
-| **WezTerm 기반** | IME 지원 좋음 | 커스텀 UI 포기 |
-| **Cocoa API** | 완벽한 IME | 전체 재작성 |
-| **현재 유지** | 안정적 | 영문만 정상 |
+- ✅ egui_term 마이그레이션 완료
+- ✅ 네이티브 메뉴바 구현
+- ✅ 패널 포커스 전환 (클릭)
+- ✅ 디바이더 드래그 (크기 조절)
+- ✅ 파일 더블클릭으로 새 탭 열기
+- ✅ TOML 기반 테마 커스터마이징
+- ✅ CJK 폰트 자동 로드
+- ✅ 한글 IME 지원 (ViewportCommand::IMEAllowed)
+- ✅ 디바이더 드래그 시 음수 크기 패닉 수정
 
 ### 다음 우선순위 작업
-1. **한글 IME 해결 방향 결정**
-2. **수직 분할** (Cmd+Shift+D)
-3. **스크롤백 버퍼**
-4. **텍스트 선택/복사**
+1. 수직 분할 (Cmd+Shift+D)
+2. 스크롤백 버퍼
+3. 텍스트 선택/복사
+4. Command Palette (Cmd+P)

@@ -12,7 +12,7 @@
 
 You're in the zone. Ideas are flowing. The last thing you need is to break your momentum switching between apps, windows, and contexts.
 
-**VibeTerm is built for vibe coders** — developers who want to stay in flow and get things done without friction. One terminal. Everything you need. No distractions.
+**VibeTerm is built for vibe coders** — developers who use AI CLI tools like Claude Code and Codex, and want IDE-level productivity without leaving the terminal.
 
 - **Split, don't switch.** Open multiple terminals side by side. No more ⌘+Tab hell.
 - **Files at your fingertips.** Browse and open files without leaving the terminal.
@@ -57,6 +57,22 @@ You're in the zone. Ideas are flowing. The last thing you need is to break your 
 - Dark brown theme (fully customizable)
 - CJK font support (Korean/Japanese/Chinese)
 - IME input support
+
+## Roadmap
+
+**VibeTerm** is evolving into the ultimate terminal for vibe coding — where the terminal becomes an intelligent canvas shared between you and AI.
+
+### Coming Soon
+
+| Phase | Features |
+|-------|----------|
+| **v0.5** | Vertical split, scrollback, text selection, Command Palette |
+| **v0.6** | Smart Context (auto-pinning, PTY interception, semantic search) |
+| **v0.7** | Ghost Text preview, one-tap apply, AI Inspector panel |
+| **v0.8** | MCP integration, multi-session orchestration, smart handoff |
+| **v1.0** | Aura effects, smooth animations, full AI integration |
+
+See [vibeterm_specification.md](./vibeterm_specification.md) for the complete roadmap.
 
 ## Installation
 
@@ -115,36 +131,9 @@ size = 13.0
 | Config | serde + toml | 1.0 / 0.8 |
 | Async | tokio | 1.0 |
 
-## Project Structure
-
-```
-src/
-├── main.rs          # Entry point
-├── app.rs           # Main application state
-├── config.rs        # Configuration management
-├── menu.rs          # Native menu bar
-├── theme.rs         # Theme system, CJK fonts
-└── ui/
-    ├── mod.rs
-    ├── tab_bar.rs   # Tab bar component
-    ├── sidebar.rs   # File explorer
-    └── status_bar.rs
-```
-
 ## Known Limitations
 
-- **Korean IME**: Due to winit/egui IME support limitations, Korean input may be incomplete in some environments.
-  - [winit#1497](https://github.com/rust-windowing/winit/issues/1497)
-  - [egui#248](https://github.com/emilk/egui/issues/248)
-
-## Roadmap
-
-- [ ] Vertical split (Cmd+Shift+D)
-- [ ] Scrollback buffer
-- [ ] Text selection and copy
-- [ ] Tab drag and drop reordering
-- [ ] New window (Cmd+Shift+N)
-- [ ] AI integration for vibe coding
+- **Korean IME**: Due to winit/egui IME limitations, Korean input may be incomplete in some environments.
 
 ## License
 
