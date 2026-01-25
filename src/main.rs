@@ -4,6 +4,7 @@
 
 mod app;
 mod config;
+mod layout;
 mod menu;
 mod theme;
 mod ui;

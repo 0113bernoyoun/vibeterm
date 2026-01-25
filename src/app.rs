@@ -7,13 +7,51 @@ use std::sync::mpsc::{Receiver, Sender};
 use egui::{CentralPanel, Context, Event, Frame, ImeEvent, Key, SidePanel, TopBottomPanel, Widget};
 use egui_term::{BackendCommand, BackendSettings, PtyEvent, TerminalBackend, TerminalView};
 use crate::config::{Config, RuntimeTheme};
+use crate::layout::{LayoutNode, PaneId, SplitDirection, ComputedLayout, DIVIDER_WIDTH, DEFAULT_SPLIT_RATIO};
 use crate::menu::{self, MenuAction};
 use crate::theme;
 use crate::ui::{FileEntry, Sidebar, StatusBar, TabBar, TabInfo};
 
+/// State for pane drag-and-drop repositioning
+#[derive(Debug, Clone)]
+pub struct PaneDragState {
+    /// The pane being dragged
+    pub source_pane_id: PaneId,
+    /// Cursor position at drag start
+    pub start_pos: egui::Pos2,
+    /// Current cursor position
+    pub current_pos: egui::Pos2,
+    /// Has drag exceeded 8px threshold?
+    pub drag_active: bool,
+}
+
+/// Where a pane can be dropped
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropZone {
+    /// Drop at top edge (creates vertical split, new pane above)
+    Top(PaneId),
+    /// Drop at bottom edge (creates vertical split, new pane below)
+    Bottom(PaneId),
+    /// Drop at left edge (creates horizontal split, new pane left)
+    Left(PaneId),
+    /// Drop at right edge (creates horizontal split, new pane right)
+    Right(PaneId),
+}
+
+/// Drop zone with rendering info
+#[derive(Debug)]
+pub struct DropZoneInfo {
+    /// The zone type
+    pub zone: DropZone,
+    /// Hit-test rectangle (25% of edge)
+    pub rect: egui::Rect,
+    /// Visual highlight rectangle (50% preview)
+    pub highlight_rect: egui::Rect,
+}
+
 /// Content type for a tab
 #[derive(Debug)]
-enum TabContent {
+pub enum TabContent {
     /// Terminal emulator
     Terminal(TerminalInstance),
     /// File viewer
@@ -38,80 +76,245 @@ impl std::fmt::Debug for TerminalInstance {
     }
 }
 
-/// A pane within a workspace (can be terminal or file viewer)
-#[derive(Debug)]
-struct Pane {
-    content: TabContent,
-    /// Relative width (0.0 - 1.0), used for split panes
-    width_ratio: f32,
-}
-
-/// Workspace containing panes
+/// Workspace containing panes in a binary split tree
 struct Workspace {
     name: String,
-    panes: Vec<Pane>,
-    focused_pane: usize,
+    root: LayoutNode<TabContent>,
+    focused_pane: PaneId,
+    next_pane_id: u64,
+}
+
+/// Transform a LayoutNode by splitting a target leaf
+fn split_node<T>(
+    node: LayoutNode<T>,
+    target_id: PaneId,
+    direction: SplitDirection,
+    new_pane_id: PaneId,
+    new_content: Option<T>,
+) -> (LayoutNode<T>, Option<T>) {
+    match node {
+        LayoutNode::Leaf { id, content } if id == target_id => {
+            // Found the target - split it, consume new_content
+            let new_content = new_content.expect("new_content should be available when target is found");
+            (LayoutNode::Split {
+                direction,
+                ratio: DEFAULT_SPLIT_RATIO,
+                first: Box::new(LayoutNode::Leaf { id, content }),
+                second: Box::new(LayoutNode::Leaf { id: new_pane_id, content: new_content }),
+            }, None)
+        }
+        LayoutNode::Leaf { id, content } => {
+            // Not the target, return unchanged with content passed through
+            (LayoutNode::Leaf { id, content }, new_content)
+        }
+        LayoutNode::Split { direction: dir, ratio, first, second } => {
+            // Recurse into first child
+            let (new_first, remaining) = split_node(*first, target_id, direction, new_pane_id, new_content);
+            // Recurse into second child with whatever content is remaining
+            let (new_second, remaining) = split_node(*second, target_id, direction, new_pane_id, remaining);
+            (LayoutNode::Split {
+                direction: dir,
+                ratio,
+                first: Box::new(new_first),
+                second: Box::new(new_second),
+            }, remaining)
+        }
+    }
+}
+
+/// Remove a pane from the tree, promoting its sibling
+fn close_node<T>(node: LayoutNode<T>, target_id: PaneId) -> Option<LayoutNode<T>> {
+    match node {
+        LayoutNode::Leaf { id, .. } if id == target_id => None,
+        LayoutNode::Leaf { id, content } => Some(LayoutNode::Leaf { id, content }),
+        LayoutNode::Split { direction, ratio, first, second } => {
+            // Check if either direct child is the target
+            if let LayoutNode::Leaf { id, .. } = first.as_ref() {
+                if *id == target_id {
+                    return Some(*second);
+                }
+            }
+            if let LayoutNode::Leaf { id, .. } = second.as_ref() {
+                if *id == target_id {
+                    return Some(*first);
+                }
+            }
+
+            // Recurse
+            let new_first = close_node(*first, target_id);
+            let new_second = close_node(*second, target_id);
+
+            match (new_first, new_second) {
+                (Some(f), Some(s)) => Some(LayoutNode::Split {
+                    direction,
+                    ratio,
+                    first: Box::new(f),
+                    second: Box::new(s),
+                }),
+                (Some(f), None) => Some(f),
+                (None, Some(s)) => Some(s),
+                (None, None) => None,
+            }
+        }
+    }
 }
 
 impl Workspace {
     fn new(
         name: impl Into<String>,
-        id: u64,
+        terminal_id: u64,
         ctx: &Context,
         pty_sender: Sender<(u64, PtyEvent)>,
     ) -> anyhow::Result<Self> {
         let name = name.into();
-        let backend = create_terminal_backend(id, ctx, pty_sender)?;
+        let backend = create_terminal_backend(terminal_id, ctx, pty_sender)?;
+        let pane_id = PaneId(0);
 
         Ok(Self {
             name,
-            panes: vec![Pane {
-                content: TabContent::Terminal(TerminalInstance { backend, id }),
-                width_ratio: 1.0,
-            }],
-            focused_pane: 0,
+            root: LayoutNode::Leaf {
+                id: pane_id,
+                content: TabContent::Terminal(TerminalInstance { backend, id: terminal_id }),
+            },
+            focused_pane: pane_id,
+            next_pane_id: 1,
         })
     }
 
-    /// Add a new terminal pane (split)
-    fn add_terminal_pane(&mut self, id: u64, ctx: &Context, pty_sender: Sender<(u64, PtyEvent)>) {
-        if let Ok(backend) = create_terminal_backend(id, ctx, pty_sender) {
-            // Redistribute widths equally
-            let new_width = 1.0 / (self.panes.len() + 1) as f32;
-            for pane in &mut self.panes {
-                pane.width_ratio = new_width;
-            }
-            self.panes.push(Pane {
-                content: TabContent::Terminal(TerminalInstance { backend, id }),
-                width_ratio: new_width,
-            });
+    /// Split focused pane in given direction
+    /// Existing content moves to first child (left/top)
+    /// New terminal goes to second child (right/bottom)
+    fn split_focused(
+        &mut self,
+        direction: SplitDirection,
+        terminal_id: u64,
+        ctx: &Context,
+        pty_sender: Sender<(u64, PtyEvent)>,
+    ) -> anyhow::Result<()> {
+        let backend = create_terminal_backend(terminal_id, ctx, pty_sender)?;
+        let new_pane_id = PaneId(self.next_pane_id);
+        self.next_pane_id += 1;
+
+        let target_id = self.focused_pane;
+        let new_content = TabContent::Terminal(TerminalInstance { backend, id: terminal_id });
+
+        // Take ownership, transform, put back
+        let old_root = std::mem::replace(&mut self.root, LayoutNode::Leaf {
+            id: PaneId(u64::MAX),
+            content: TabContent::FileViewer { path: PathBuf::new(), content: String::new(), scroll_offset: 0.0 },
+        });
+        let (new_root, _) = split_node(old_root, target_id, direction, new_pane_id, Some(new_content));
+        self.root = new_root;
+
+        // Focus the new pane
+        self.focused_pane = new_pane_id;
+
+        Ok(())
+    }
+
+    /// Close a pane by ID, returns true if closed
+    fn close_pane(&mut self, pane_id: PaneId) -> bool {
+        // Get all pane IDs to find next focus target
+        let mut pane_ids = Vec::new();
+        self.root.collect_pane_ids(&mut pane_ids);
+
+        if pane_ids.len() <= 1 {
+            // Don't close the last pane
+            return false;
+        }
+
+        // Find index of closing pane
+        let closing_idx = match pane_ids.iter().position(|id| *id == pane_id) {
+            Some(idx) => idx,
+            None => return false,
+        };
+
+        // Determine new focus (prefer previous, else next)
+        let new_focus = if closing_idx > 0 {
+            pane_ids[closing_idx - 1]
+        } else {
+            pane_ids[1]
+        };
+
+        // Close the pane
+        let old_root = std::mem::replace(&mut self.root, LayoutNode::Leaf {
+            id: PaneId(u64::MAX),
+            content: TabContent::FileViewer { path: PathBuf::new(), content: String::new(), scroll_offset: 0.0 },
+        });
+
+        if let Some(new_root) = close_node(old_root, pane_id) {
+            self.root = new_root;
+            self.focused_pane = new_focus;
+            true
+        } else {
+            false
         }
     }
 
-    /// Add a file viewer pane
-    fn add_file_pane(&mut self, path: PathBuf) {
-        let content = std::fs::read_to_string(&path).unwrap_or_else(|e| format!("Error: {}", e));
-        let name = path.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
+    /// Move focus to next pane (DFS order)
+    fn focus_next(&mut self) {
+        let mut pane_ids = Vec::new();
+        self.root.collect_pane_ids(&mut pane_ids);
 
-        // Redistribute widths
-        let new_width = 1.0 / (self.panes.len() + 1) as f32;
-        for pane in &mut self.panes {
-            pane.width_ratio = new_width;
+        if let Some(idx) = pane_ids.iter().position(|id| *id == self.focused_pane) {
+            let next_idx = (idx + 1) % pane_ids.len();
+            self.focused_pane = pane_ids[next_idx];
+        }
+    }
+
+    /// Move focus to previous pane (DFS order)
+    fn focus_prev(&mut self) {
+        let mut pane_ids = Vec::new();
+        self.root.collect_pane_ids(&mut pane_ids);
+
+        if let Some(idx) = pane_ids.iter().position(|id| *id == self.focused_pane) {
+            let prev_idx = if idx == 0 { pane_ids.len() - 1 } else { idx - 1 };
+            self.focused_pane = pane_ids[prev_idx];
+        }
+    }
+
+    /// Get mutable reference to content by PaneId
+    fn get_content_mut(&mut self, pane_id: PaneId) -> Option<&mut TabContent> {
+        self.root.get_content_mut(pane_id)
+    }
+
+    /// Get content reference
+    fn get_content(&self, pane_id: PaneId) -> Option<&TabContent> {
+        self.root.get_content(pane_id)
+    }
+
+    /// Find pane by terminal ID
+    fn find_pane_by_terminal_id(&self, terminal_id: u64) -> Option<PaneId> {
+        fn find_in_node(node: &LayoutNode<TabContent>, terminal_id: u64) -> Option<PaneId> {
+            match node {
+                LayoutNode::Leaf { id, content } => {
+                    if let TabContent::Terminal(t) = content {
+                        if t.id == terminal_id {
+                            return Some(*id);
+                        }
+                    }
+                    None
+                }
+                LayoutNode::Split { first, second, .. } => {
+                    find_in_node(first, terminal_id)
+                        .or_else(|| find_in_node(second, terminal_id))
+                }
+            }
         }
 
-        self.panes.push(Pane {
-            content: TabContent::FileViewer {
-                path,
-                content,
-                scroll_offset: 0.0,
-            },
-            width_ratio: new_width,
-        });
+        find_in_node(&self.root, terminal_id)
+    }
 
-        self.focused_pane = self.panes.len() - 1;
-        self.name = name;
+    /// Count panes
+    fn pane_count(&self) -> usize {
+        self.root.pane_count()
+    }
+
+    /// Get all pane IDs in DFS order
+    fn pane_ids(&self) -> Vec<PaneId> {
+        let mut ids = Vec::new();
+        self.root.collect_pane_ids(&mut ids);
+        ids
     }
 }
 
@@ -142,10 +345,14 @@ pub struct VibeTermApp {
     ctx: Context,
     /// Divider being dragged (workspace_idx, divider_idx)
     dragging_divider: Option<(usize, usize)>,
+    /// Pane being dragged for repositioning
+    dragging_pane: Option<PaneDragState>,
     /// Show preferences window
     show_preferences: bool,
     /// IME is currently composing (preedit active)
     ime_composing: bool,
+    /// Cached terminal theme (regenerated when config changes)
+    cached_terminal_theme: egui_term::TerminalTheme,
 }
 
 impl VibeTermApp {
@@ -153,6 +360,7 @@ impl VibeTermApp {
         // Load configuration
         let config = Config::load();
         let theme = RuntimeTheme::from(&config.theme);
+        let cached_terminal_theme = theme::get_terminal_theme(&config);
 
         // Apply VibeTerm theme
         crate::theme::apply_theme(&cc.egui_ctx, &theme);
@@ -186,8 +394,10 @@ impl VibeTermApp {
             pty_receiver,
             ctx: cc.egui_ctx.clone(),
             dragging_divider: None,
+            dragging_pane: None,
             show_preferences: false,
             ime_composing: false,
+            cached_terminal_theme,
         }
     }
 
@@ -228,19 +438,21 @@ impl VibeTermApp {
             .unwrap_or_else(|| "File".to_string());
 
         let content = std::fs::read_to_string(&path).unwrap_or_else(|e| format!("Error: {}", e));
+        let pane_id = PaneId(0);
 
         // Create a new workspace with a file viewer
         let workspace = Workspace {
             name,
-            panes: vec![Pane {
+            root: LayoutNode::Leaf {
+                id: pane_id,
                 content: TabContent::FileViewer {
                     path,
                     content,
                     scroll_offset: 0.0,
                 },
-                width_ratio: 1.0,
-            }],
-            focused_pane: 0,
+            },
+            focused_pane: pane_id,
+            next_pane_id: 1,
         };
 
         self.workspaces.push(workspace);
@@ -272,30 +484,45 @@ impl VibeTermApp {
         }
     }
 
-    /// Split current pane (add new terminal)
-    fn split_pane(&mut self) {
+    /// Split current pane horizontally (add new terminal to the right)
+    fn split_pane_horizontal(&mut self) {
         let id = self.next_terminal_id;
         self.next_terminal_id += 1;
 
         // Clone before mutable borrow to satisfy borrow checker
         let ctx = self.ctx.clone();
         let pty_sender = self.pty_sender.clone();
-        self.current_workspace_mut().add_terminal_pane(id, &ctx, pty_sender);
+        let _ = self.current_workspace_mut().split_focused(
+            SplitDirection::Horizontal,
+            id,
+            &ctx,
+            pty_sender,
+        );
+    }
+
+    /// Split current pane vertically (add new terminal below)
+    fn split_pane_vertical(&mut self) {
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
+
+        // Clone before mutable borrow to satisfy borrow checker
+        let ctx = self.ctx.clone();
+        let pty_sender = self.pty_sender.clone();
+        let _ = self.current_workspace_mut().split_focused(
+            SplitDirection::Vertical,
+            id,
+            &ctx,
+            pty_sender,
+        );
     }
 
     /// Close current pane
     fn close_current_pane(&mut self) {
-        let ws = self.current_workspace_mut();
-        if ws.panes.len() > 1 {
-            ws.panes.remove(ws.focused_pane);
-            // Redistribute widths
-            let new_width = 1.0 / ws.panes.len() as f32;
-            for pane in &mut ws.panes {
-                pane.width_ratio = new_width;
-            }
-            if ws.focused_pane >= ws.panes.len() {
-                ws.focused_pane = ws.panes.len() - 1;
-            }
+        let focused_pane = self.current_workspace().focused_pane;
+        let pane_count = self.current_workspace().pane_count();
+
+        if pane_count > 1 {
+            self.current_workspace_mut().close_pane(focused_pane);
         } else if self.workspaces.len() > 1 {
             self.close_tab(self.active_workspace);
         }
@@ -316,9 +543,14 @@ impl VibeTermApp {
                 self.close_current_pane();
             }
 
-            // Cmd+D: Split pane
+            // Cmd+D: Split pane horizontally (left/right)
             if i.key_pressed(Key::D) && modifiers.command && !modifiers.shift {
-                self.split_pane();
+                self.split_pane_horizontal();
+            }
+
+            // Cmd+Shift+D: Split pane vertically (top/bottom)
+            if i.key_pressed(Key::D) && modifiers.command && modifiers.shift {
+                self.split_pane_vertical();
             }
 
             // Cmd+B: Toggle sidebar
@@ -354,18 +586,12 @@ impl VibeTermApp {
 
             // Ctrl+Tab: Next pane
             if i.key_pressed(Key::Tab) && modifiers.ctrl && !modifiers.shift {
-                let ws = &mut self.workspaces[self.active_workspace];
-                ws.focused_pane = (ws.focused_pane + 1) % ws.panes.len();
+                self.workspaces[self.active_workspace].focus_next();
             }
 
             // Ctrl+Shift+Tab: Previous pane
             if i.key_pressed(Key::Tab) && modifiers.ctrl && modifiers.shift {
-                let ws = &mut self.workspaces[self.active_workspace];
-                if ws.focused_pane == 0 {
-                    ws.focused_pane = ws.panes.len() - 1;
-                } else {
-                    ws.focused_pane -= 1;
-                }
+                self.workspaces[self.active_workspace].focus_prev();
             }
         });
     }
@@ -393,8 +619,9 @@ impl VibeTermApp {
                             log::info!("IME Commit: '{}'", text);
                             // Send committed text to terminal
                             if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
-                                if let Some(pane) = ws.panes.get_mut(ws.focused_pane) {
-                                    if let TabContent::Terminal(terminal) = &mut pane.content {
+                                let focused = ws.focused_pane;
+                                if let Some(content) = ws.get_content_mut(focused) {
+                                    if let TabContent::Terminal(terminal) = content {
                                         terminal.backend.process_command(
                                             BackendCommand::Write(text.clone().into_bytes())
                                         );
@@ -433,7 +660,8 @@ impl VibeTermApp {
                 MenuAction::CloseWindow => {
                     // Handled by system
                 }
-                MenuAction::SplitHorizontal | MenuAction::SplitVertical => self.split_pane(),
+                MenuAction::SplitHorizontal => self.split_pane_horizontal(),
+                MenuAction::SplitVertical => self.split_pane_vertical(),
                 MenuAction::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
                 MenuAction::Preferences => self.show_preferences = true,
                 MenuAction::About => {
@@ -454,22 +682,9 @@ impl VibeTermApp {
                     log::info!("Terminal {} exited", terminal_id);
                     // Find and remove the terminal
                     for workspace in &mut self.workspaces {
-                        if let Some(idx) = workspace.panes.iter().position(|p| {
-                            if let TabContent::Terminal(t) = &p.content {
-                                t.id == terminal_id
-                            } else {
-                                false
-                            }
-                        }) {
-                            if workspace.panes.len() > 1 {
-                                workspace.panes.remove(idx);
-                                let new_width = 1.0 / workspace.panes.len() as f32;
-                                for pane in &mut workspace.panes {
-                                    pane.width_ratio = new_width;
-                                }
-                                if workspace.focused_pane >= workspace.panes.len() {
-                                    workspace.focused_pane = workspace.panes.len() - 1;
-                                }
+                        if let Some(pane_id) = workspace.find_pane_by_terminal_id(terminal_id) {
+                            if workspace.pane_count() > 1 {
+                                workspace.close_pane(pane_id);
                             }
                             break;
                         }
@@ -507,6 +722,108 @@ impl VibeTermApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Compute drop zones for all panes except the source pane
+    fn compute_drop_zones(&self, layout: &ComputedLayout, source_id: PaneId) -> Vec<DropZoneInfo> {
+        let mut zones = Vec::new();
+        let edge_ratio = 0.25;
+
+        for (pane_id, rect) in &layout.pane_rects {
+            if *pane_id == source_id {
+                continue; // Skip source pane
+            }
+
+            let w = rect.width();
+            let h = rect.height();
+
+            // Top zone (25% of height from top)
+            zones.push(DropZoneInfo {
+                zone: DropZone::Top(*pane_id),
+                rect: egui::Rect::from_min_size(rect.min, egui::vec2(w, h * edge_ratio)),
+                highlight_rect: egui::Rect::from_min_size(rect.min, egui::vec2(w, h * 0.5)),
+            });
+
+            // Bottom zone (25% of height from bottom)
+            zones.push(DropZoneInfo {
+                zone: DropZone::Bottom(*pane_id),
+                rect: egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, rect.max.y - h * edge_ratio),
+                    egui::vec2(w, h * edge_ratio),
+                ),
+                highlight_rect: egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, rect.min.y + h * 0.5),
+                    egui::vec2(w, h * 0.5),
+                ),
+            });
+
+            // Left zone (25% of width from left)
+            zones.push(DropZoneInfo {
+                zone: DropZone::Left(*pane_id),
+                rect: egui::Rect::from_min_size(rect.min, egui::vec2(w * edge_ratio, h)),
+                highlight_rect: egui::Rect::from_min_size(rect.min, egui::vec2(w * 0.5, h)),
+            });
+
+            // Right zone (25% of width from right)
+            zones.push(DropZoneInfo {
+                zone: DropZone::Right(*pane_id),
+                rect: egui::Rect::from_min_size(
+                    egui::pos2(rect.max.x - w * edge_ratio, rect.min.y),
+                    egui::vec2(w * edge_ratio, h),
+                ),
+                highlight_rect: egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + w * 0.5, rect.min.y),
+                    egui::vec2(w * 0.5, h),
+                ),
+            });
+        }
+
+        zones
+    }
+
+    /// Execute a pane drop operation
+    fn execute_pane_drop(&mut self, source_id: PaneId, zone: DropZone) {
+        let ws = &mut self.workspaces[self.active_workspace];
+
+        // Create a placeholder to swap with
+        let placeholder = LayoutNode::Leaf {
+            id: PaneId(u64::MAX),
+            content: TabContent::FileViewer {
+                path: std::path::PathBuf::new(),
+                content: String::new(),
+                scroll_offset: 0.0,
+            },
+        };
+
+        // Step 1: Extract source pane from tree
+        let old_root = std::mem::replace(&mut ws.root, placeholder);
+
+        if let Some((tree_without_source, extracted_content)) = crate::layout::extract_pane(old_root, source_id) {
+            // Step 2: Determine target and direction from zone
+            let (target_id, direction, before) = match zone {
+                DropZone::Top(id) => (id, SplitDirection::Vertical, true),
+                DropZone::Bottom(id) => (id, SplitDirection::Vertical, false),
+                DropZone::Left(id) => (id, SplitDirection::Horizontal, true),
+                DropZone::Right(id) => (id, SplitDirection::Horizontal, false),
+            };
+
+            // Step 3: Insert at new location (keeping same PaneId for PTY connection)
+            ws.root = crate::layout::insert_adjacent(
+                tree_without_source,
+                target_id,
+                source_id,
+                extracted_content,
+                direction,
+                before,
+            );
+
+            // Keep focus on the moved pane
+            ws.focused_pane = source_id;
+        } else {
+            // Extraction failed (single pane?), restore original
+            // This shouldn't happen if drop zones are computed correctly
+            log::warn!("Failed to extract pane {} for drop", source_id.0);
         }
     }
 
@@ -571,6 +888,7 @@ impl VibeTermApp {
                     if ui.button("Save & Apply").clicked() {
                         // Update runtime theme
                         self.theme = RuntimeTheme::from(&self.config.theme);
+                        self.cached_terminal_theme = theme::get_terminal_theme(&self.config);
                         // Apply to egui
                         crate::theme::apply_theme(&self.ctx, &self.theme);
                         // Save to file
@@ -584,132 +902,200 @@ impl VibeTermApp {
             });
     }
 
-    /// Render panes with proper divider drag support
+    /// Render panes using the binary split tree layout
     fn render_panes(&mut self, ui: &mut egui::Ui) {
-        let terminal_theme = theme::get_terminal_theme(&self.config);
-        let pane_count = self.current_workspace().panes.len();
-        let focused_idx = self.current_workspace().focused_pane;
+        let terminal_theme = self.cached_terminal_theme.clone();
+        let focused_pane = self.current_workspace().focused_pane;
 
-        if pane_count == 0 {
-            return;
-        }
+        // Compute layout for all panes
+        let available_rect = ui.available_rect_before_wrap();
+        let mut layout = ComputedLayout::new();
+        let mut path = Vec::new();
+        self.workspaces[self.active_workspace]
+            .root
+            .compute_layout(available_rect, DIVIDER_WIDTH, &mut path, &mut layout);
 
-        let available_width = ui.available_width();
-        let available_height = ui.available_height();
-        let divider_width = 4.0; // Make divider wider for easier dragging
-        let total_divider_width = (pane_count - 1) as f32 * divider_width;
-        let content_width = available_width - total_divider_width;
-
-        // Check for click to focus pane BEFORE rendering (check pointer position)
+        // Check for click to focus pane (on click release)
         let clicked_primary = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+        let button_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
         let pointer_pos = ui.input(|i| i.pointer.latest_pos());
+        let pointer_released = ui.input(|i| i.pointer.any_released());
 
-        // Handle divider dragging
-        if let Some((_, divider_idx)) = self.dragging_divider {
-            if ui.input(|i| i.pointer.any_released()) {
-                self.dragging_divider = None;
-            } else if let Some(pos) = pointer_pos {
-                // Calculate new ratios based on drag position
-                let start_x = ui.min_rect().left();
-                let relative_x = (pos.x - start_x).max(0.0);
-
-                // Minimum pane width as ratio (prevent collapse)
-                let min_ratio = 0.1;
-
-                // Calculate target ratio for left panes (0..=divider_idx)
-                let left_panes = divider_idx + 1;
-                let right_panes = pane_count - left_panes;
-
-                // Target ratio based on mouse position
-                let target_left_total = (relative_x / content_width).clamp(
-                    min_ratio * left_panes as f32,  // minimum for left panes
-                    1.0 - min_ratio * right_panes as f32  // leave room for right panes
-                );
-
-                let ws = &mut self.workspaces[self.active_workspace];
-
-                // Distribute left ratio evenly among left panes
-                let left_each = (target_left_total / left_panes as f32).max(min_ratio);
-                // Distribute remaining ratio evenly among right panes
-                let right_total = (1.0 - left_each * left_panes as f32).max(min_ratio * right_panes as f32);
-                let right_each = (right_total / right_panes as f32).max(min_ratio);
-
-                for (i, pane) in ws.panes.iter_mut().enumerate() {
-                    if i <= divider_idx {
-                        pane.width_ratio = left_each;
-                    } else {
-                        pane.width_ratio = right_each;
-                    }
-                }
-            }
-        }
-
-        // Calculate pane rects first to determine which pane was clicked
-        let start_x = ui.min_rect().left();
-        let mut pane_rects: Vec<egui::Rect> = Vec::new();
-        let mut current_x = start_x;
-        let min_pane_width = 50.0; // Minimum pane width in pixels
-        for idx in 0..pane_count {
-            let pane_width = (self.workspaces[self.active_workspace].panes[idx].width_ratio * content_width).max(min_pane_width);
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(current_x, ui.min_rect().top()),
-                egui::vec2(pane_width, available_height.max(1.0)),
-            );
-            pane_rects.push(rect);
-            current_x += pane_width + divider_width;
-        }
-
-        // Check which pane was clicked and switch focus
         if clicked_primary {
             if let Some(pos) = pointer_pos {
-                for (idx, rect) in pane_rects.iter().enumerate() {
-                    if rect.contains(pos) && idx != focused_idx {
-                        self.workspaces[self.active_workspace].focused_pane = idx;
+                for (pane_id, rect) in &layout.pane_rects {
+                    if rect.contains(pos) && *pane_id != focused_pane {
+                        self.workspaces[self.active_workspace].focused_pane = *pane_id;
                         break;
                     }
                 }
             }
         }
 
-        // Update focused_idx after potential change
-        let focused_idx = self.current_workspace().focused_pane;
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-
-            for idx in 0..pane_count {
-                let is_focused = idx == focused_idx;
-                let pane_width = (self.workspaces[self.active_workspace].panes[idx].width_ratio * content_width).max(min_pane_width);
-
-                // Pane area - use NONE sense since we handle clicks manually above
-                let (rect, _response) = ui.allocate_exact_size(
-                    egui::vec2(pane_width, available_height.max(1.0)),
-                    egui::Sense::hover(),
-                );
-
-                // Focus border
-                if is_focused {
-                    ui.painter().rect_stroke(
-                        rect,
-                        0.0,
-                        egui::Stroke::new(2.0, self.theme.primary),
-                        egui::StrokeKind::Inside,
-                    );
-                } else {
-                    ui.painter().rect_stroke(
-                        rect,
-                        0.0,
-                        egui::Stroke::new(1.0, self.theme.border),
-                        egui::StrokeKind::Inside,
-                    );
+        // Handle pane drag-and-drop
+        // Start potential drag on button press (not click release)
+        if button_pressed && self.dragging_pane.is_none() && self.dragging_divider.is_none() {
+            if let Some(pos) = pointer_pos {
+                for (pane_id, rect) in &layout.pane_rects {
+                    if rect.contains(pos) {
+                        self.dragging_pane = Some(PaneDragState {
+                            source_pane_id: *pane_id,
+                            start_pos: pos,
+                            current_pos: pos,
+                            drag_active: false,
+                        });
+                        break;
+                    }
                 }
+            }
+        }
 
-                // Render pane content
-                let inner_rect = rect.shrink(2.0);
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new().max_rect(inner_rect),
-                    |ui| {
-                        match &mut self.workspaces[self.active_workspace].panes[idx].content {
+        // Update drag state while dragging
+        if let Some(ref mut drag_state) = self.dragging_pane {
+            if let Some(pos) = pointer_pos {
+                drag_state.current_pos = pos;
+
+                // Activate drag after 8px threshold
+                if !drag_state.drag_active {
+                    let delta = drag_state.current_pos - drag_state.start_pos;
+                    if delta.length() >= 8.0 {
+                        drag_state.drag_active = true;
+                    }
+                }
+            }
+
+            // Cancel on ESC
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.dragging_pane = None;
+            }
+        }
+
+        // Handle drop on button release (separate block to avoid borrow issues)
+        if pointer_released {
+            if let Some(drag_state) = self.dragging_pane.take() {
+                if drag_state.drag_active {
+                    let drop_zones = self.compute_drop_zones(&layout, drag_state.source_pane_id);
+                    if let Some(zone_info) = drop_zones.iter().find(|z| z.rect.contains(drag_state.current_pos)) {
+                        self.execute_pane_drop(drag_state.source_pane_id, zone_info.zone);
+                    }
+                }
+                // dragging_pane is already None from .take()
+            }
+        }
+
+        // Handle divider dragging
+        let mut needs_recompute = false;
+        if let Some((_, divider_idx)) = self.dragging_divider {
+            if ui.input(|i| i.pointer.any_released()) {
+                self.dragging_divider = None;
+            } else if let Some(pos) = pointer_pos {
+                // Get the divider info
+                if let Some(divider) = layout.dividers.get(divider_idx) {
+                    // Get the split node at this path and update its ratio
+                    if let Some(split_node) = self.workspaces[self.active_workspace]
+                        .root
+                        .get_split_at_path_mut(&divider.path)
+                    {
+                        if let LayoutNode::Split { direction, ratio, .. } = split_node {
+                            let parent_rect = if divider.path.is_empty() {
+                                available_rect
+                            } else {
+                                // For nested splits, we need the parent rect
+                                // For now, use available_rect as approximation
+                                available_rect
+                            };
+
+                            let new_ratio = match direction {
+                                SplitDirection::Horizontal => {
+                                    let relative_x = pos.x - parent_rect.left();
+                                    (relative_x / (parent_rect.width() - DIVIDER_WIDTH))
+                                        .clamp(crate::layout::MIN_SPLIT_RATIO, crate::layout::MAX_SPLIT_RATIO)
+                                }
+                                SplitDirection::Vertical => {
+                                    let relative_y = pos.y - parent_rect.top();
+                                    (relative_y / (parent_rect.height() - DIVIDER_WIDTH))
+                                        .clamp(crate::layout::MIN_SPLIT_RATIO, crate::layout::MAX_SPLIT_RATIO)
+                                }
+                            };
+                            *ratio = new_ratio;
+                            needs_recompute = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // CONDITIONAL recompute - only when divider drag changed ratio
+        if needs_recompute {
+            layout = ComputedLayout::new();
+            path.clear();
+            self.workspaces[self.active_workspace]
+                .root
+                .compute_layout(available_rect, DIVIDER_WIDTH, &mut path, &mut layout);
+        }
+
+        let focused_pane = self.current_workspace().focused_pane;
+
+        // Render dividers first (background layer)
+        for (idx, divider) in layout.dividers.iter().enumerate() {
+            let divider_response = ui.allocate_rect(divider.rect, egui::Sense::click_and_drag());
+
+            if divider_response.drag_started() {
+                self.dragging_divider = Some((self.active_workspace, idx));
+            }
+
+            let divider_color = if divider_response.dragged() || divider_response.hovered() {
+                self.theme.primary
+            } else {
+                self.theme.border
+            };
+            ui.painter().rect_filled(divider.rect, 0.0, divider_color);
+
+            if divider_response.hovered() || divider_response.dragged() {
+                let cursor = match divider.direction {
+                    SplitDirection::Horizontal => egui::CursorIcon::ResizeHorizontal,
+                    SplitDirection::Vertical => egui::CursorIcon::ResizeVertical,
+                };
+                ui.ctx().set_cursor_icon(cursor);
+            }
+        }
+
+        // Render panes
+        // We need to collect pane info first to avoid borrow issues
+        let pane_info: Vec<(PaneId, egui::Rect)> = layout.pane_rects.iter()
+            .map(|(id, rect)| (*id, *rect))
+            .collect();
+
+        for (pane_id, rect) in pane_info {
+            let is_focused = pane_id == focused_pane;
+
+            // Focus border
+            if is_focused {
+                ui.painter().rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(2.0, self.theme.primary),
+                    egui::StrokeKind::Inside,
+                );
+            } else {
+                ui.painter().rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, self.theme.border),
+                    egui::StrokeKind::Inside,
+                );
+            }
+
+            // Render pane content
+            let inner_rect = rect.shrink(2.0);
+            ui.allocate_new_ui(
+                egui::UiBuilder::new().max_rect(inner_rect),
+                |ui| {
+                    if let Some(content) = self.workspaces[self.active_workspace]
+                        .root
+                        .get_content_mut(pane_id)
+                    {
+                        match content {
                             TabContent::Terminal(terminal) => {
                                 TerminalView::new(ui, &mut terminal.backend)
                                     .set_theme(terminal_theme.clone())
@@ -718,10 +1104,9 @@ impl VibeTermApp {
                                     .ui(ui);
                             }
                             TabContent::FileViewer { content, .. } => {
-                                // Simple file viewer
                                 ui.painter().rect_filled(inner_rect, 0.0, self.theme.background);
                                 egui::ScrollArea::vertical()
-                                    .id_salt(format!("file_scroll_{}", idx))
+                                    .id_salt(format!("file_scroll_{}", pane_id.0))
                                     .show(ui, |ui| {
                                         ui.add(egui::Label::new(
                                             egui::RichText::new(content.as_str())
@@ -731,36 +1116,46 @@ impl VibeTermApp {
                                     });
                             }
                         }
-                    },
-                );
+                    }
+                },
+            );
+        }
 
-                // Divider (except for last pane)
-                if idx < pane_count - 1 {
-                    let (divider_rect, divider_response) = ui.allocate_exact_size(
-                        egui::vec2(divider_width, available_height),
-                        egui::Sense::click_and_drag(),
+        // Render drag feedback overlay
+        if let Some(ref drag_state) = self.dragging_pane {
+            if drag_state.drag_active {
+                let drop_zones = self.compute_drop_zones(&layout, drag_state.source_pane_id);
+
+                // Find and highlight active zone
+                if let Some(zone_info) = drop_zones.iter().find(|z| z.rect.contains(drag_state.current_pos)) {
+                    ui.painter().rect_filled(
+                        zone_info.highlight_rect,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(100, 150, 255, 80),
                     );
-
-                    // Start dragging
-                    if divider_response.drag_started() {
-                        self.dragging_divider = Some((self.active_workspace, idx));
-                    }
-
-                    // Visual feedback
-                    let divider_color = if divider_response.dragged() || divider_response.hovered() {
-                        self.theme.primary
-                    } else {
-                        self.theme.border
-                    };
-                    ui.painter().rect_filled(divider_rect, 0.0, divider_color);
-
-                    // Cursor change
-                    if divider_response.hovered() || divider_response.dragged() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                    }
                 }
+
+                // Ghost preview following cursor
+                let preview_size = egui::vec2(120.0, 80.0);
+                let preview_pos = drag_state.current_pos - preview_size * 0.5;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(preview_pos, preview_size),
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(
+                        self.theme.primary.r(),
+                        self.theme.primary.g(),
+                        self.theme.primary.b(),
+                        100,
+                    ),
+                );
+                ui.painter().rect_stroke(
+                    egui::Rect::from_min_size(preview_pos, preview_size),
+                    4.0,
+                    egui::Stroke::new(2.0, self.theme.primary),
+                    egui::StrokeKind::Inside,
+                );
             }
-        });
+        }
     }
 }
 
@@ -801,7 +1196,10 @@ impl eframe::App for VibeTermApp {
                 if let Some(idx) = response.selected_tab {
                     self.active_workspace = idx;
                     // Reset focused pane to first pane when switching tabs
-                    self.workspaces[idx].focused_pane = 0;
+                    let pane_ids = self.workspaces[idx].pane_ids();
+                    if let Some(first_id) = pane_ids.first() {
+                        self.workspaces[idx].focused_pane = *first_id;
+                    }
                 }
                 if let Some(idx) = response.closed_tab {
                     self.close_tab(idx);
@@ -816,9 +1214,11 @@ impl eframe::App for VibeTermApp {
             .exact_height(theme::STATUS_BAR_HEIGHT)
             .frame(Frame::NONE)
             .show(ctx, |ui| {
-                let pane_count = self.current_workspace().panes.len();
-                let focused = self.current_workspace().focused_pane;
-                StatusBar::new(pane_count, focused, &self.theme).show(ui);
+                let pane_count = self.current_workspace().pane_count();
+                let pane_ids = self.current_workspace().pane_ids();
+                let focused_pane = self.current_workspace().focused_pane;
+                let focused_idx = pane_ids.iter().position(|id| *id == focused_pane).unwrap_or(0);
+                StatusBar::new(pane_count, focused_idx, &self.theme).show(ui);
             });
 
         // Sidebar (left)
