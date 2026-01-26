@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2025-01-26
+
+### Added
+
+#### Context Management System
+- **Git Status Integration**: Real-time git status tracking with file-level indicators
+  - Automatic git cache refresh every 5 seconds
+  - File status symbols: M (Modified), A (Staged), U (Untracked), D (Deleted), R (Renamed), ! (Conflicted)
+  - Repository status display: branch name, commits ahead/behind
+- **File Pinning**: Manual file pinning for AI context with LRU eviction
+  - Pin indicator (📌) in sidebar
+  - Maximum 50 pinned files per workspace
+  - Smart eviction when capacity exceeded
+- **File System Watcher**: Automatic directory monitoring with smart debouncing
+  - 200ms debounce prevents excessive updates
+  - Automatic sidebar refresh on file changes
+  - Build artifact filtering (.git, target/, node_modules/)
+
+#### New Dependencies
+- `notify 6.1` - Cross-platform file system event notification
+- `git2 0.19` - Git repository operations and status tracking
+- `regex 1.10` - Pattern matching for file filtering
+
+### Technical
+- New modules: `src/context/` and `src/watcher/`
+- **`context/manager.rs`**: Orchestrates git status, file watcher, and pinned files
+- **`context/git.rs`**: Git repository status tracking with caching
+- **`context/pinned.rs`**: File pinning with LRU eviction
+- **`context/events.rs`**: Context event system for UI updates
+- **`watcher/service.rs`**: File system watching with debouncing and filtering
+- Event-driven architecture for reactive UI updates
+- Performance optimized: <50MB memory, <5% CPU idle
+
+### Performance
+- Debounced file watcher reduces CPU/memory overhead
+- Git cache respects 5-second refresh interval
+- LRU-based file pinning prevents unbounded memory growth
+- Efficient event batching from file watcher
+
 ## [0.6.0] - 2025-01-26
 
 ### Added

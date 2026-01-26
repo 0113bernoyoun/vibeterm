@@ -4,6 +4,7 @@
 
 mod app;
 mod config;
+mod context;
 mod directory_scanner;
 mod layout;
 mod menu;
@@ -11,6 +12,7 @@ mod project;
 mod pty_tracker;
 mod theme;
 mod ui;
+mod watcher;
 
 use app::VibeTermApp;
 

@@ -2,7 +2,7 @@
 
 **Your flow, uninterrupted.**
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 
@@ -81,12 +81,12 @@ You're in the zone. Ideas are flowing. The last thing you need is to break your 
 |---------|----------|
 | **v0.5** | Vertical split, scrollback, text selection, Command Palette |
 | **v0.6** | Multi-pane contextual sidebar, tab reordering, command palette ✓ |
+| **v0.7** | Context Management (git status, file pinning, file watcher) ✓ |
 
 ### Coming Soon
 
 | Phase | Features |
 |-------|----------|
-| **v0.7** | Smart Context (auto-pinning, PTY interception, semantic search) |
 | **v0.8** | Ghost Text preview, one-tap apply, AI Inspector panel |
 | **v0.9** | MCP integration, multi-session orchestration, smart handoff |
 | **v1.0** | Aura effects, smooth animations, full AI integration |
@@ -125,6 +125,8 @@ cargo run --release
 | Shortcut | Action |
 |----------|--------|
 | `Cmd+B` | Toggle sidebar |
+| `Cmd+Shift+C` | Collapse all directories in sidebar |
+| `Cmd+Shift+E` | Expand all directories in sidebar |
 | `Cmd+,` | Open preferences |
 
 ### Command Palette
@@ -166,6 +168,37 @@ The Command Palette provides quick access to all terminal operations with fuzzy 
 2. Type to search (fuzzy matching)
 3. Press `Enter` to execute or `Esc` to cancel
 4. Search is case-insensitive and matches partial words
+
+## Context Management (v0.7.0)
+
+VibeTerm now includes intelligent context awareness to support AI-assisted development workflows.
+
+### Git Status Integration
+
+Real-time git status indicators in the sidebar help you understand repository state at a glance:
+
+- **Status Indicators**: M (Modified), A (Staged), U (Untracked), D (Deleted), R (Renamed), ! (Conflicted)
+- **Repository Status**: Branch name, commits ahead/behind remote
+- **Automatic Caching**: Git cache refreshes every 5 seconds for performance
+- **File-Level Tracking**: Each file in sidebar shows its current git status
+
+### File Pinning
+
+Pin important files for AI context using the sidebar interaction. Pinned files are prioritized for AI-assisted workflows:
+
+- **Manual Pinning**: Click the pin icon or use context menu to pin files
+- **Pin Indicator**: Pinned files show a 📌 indicator in the sidebar
+- **Smart Eviction**: LRU (Least Recently Used) eviction when limit is reached
+- **Max Capacity**: Up to 50 pinned files per workspace
+
+### File System Watching
+
+VibeTerm automatically monitors your project directory for changes:
+
+- **Automatic Refresh**: Sidebar refreshes instantly when files are created, modified, or deleted
+- **Smart Debouncing**: 200ms debounce prevents excessive updates during rapid changes
+- **Build Artifact Filtering**: Automatically ignores `.git`, `target/`, `node_modules/`, and other build directories
+- **Performance**: Minimal CPU/memory overhead with efficient event batching
 
 ## Sidebar Features
 

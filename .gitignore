@@ -26,6 +26,7 @@ run_debug.sh
 DEBUG_ANALYSIS.md
 KEYBOARD_DEBUG.md
 COMPLETION_SUMMARY.md
+TEST_RESULTS_*.md
 prompts.md
 architecture_candidate.md
 feature-list.md

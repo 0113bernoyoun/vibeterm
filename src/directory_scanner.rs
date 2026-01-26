@@ -66,6 +66,8 @@ pub fn scan_directory(root: &PathBuf, max_depth: usize, max_files: usize) -> Vec
                 is_expanded: false,
                 depth,
                 is_last,
+                git_status: None,
+                is_pinned: false,
             });
 
             *file_count += 1;

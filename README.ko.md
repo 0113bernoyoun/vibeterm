@@ -97,6 +97,8 @@ cargo run --release
 | `Cmd+W` | 현재 패널/탭 닫기 |
 | `Cmd+D` | 수평 분할 |
 | `Cmd+B` | 사이드바 토글 |
+| `Cmd+Shift+C` | 사이드바의 모든 디렉토리 접기 |
+| `Cmd+Shift+E` | 사이드바의 모든 디렉토리 펼치기 |
 | `Cmd+,` | 설정 창 |
 | `Cmd+1-9` | 탭 전환 |
 | `Ctrl+Tab` | 다음 패널 |

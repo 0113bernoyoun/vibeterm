@@ -5,6 +5,7 @@
 use egui::Color32;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use crate::context::ContextConfig;
 
 /// Main configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub font: FontConfig,
     pub ui: UiConfig,
+    pub context: ContextConfig,
 }
 
 impl Default for Config {
@@ -21,6 +23,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             font: FontConfig::default(),
             ui: UiConfig::default(),
+            context: ContextConfig::default(),
         }
     }
 }

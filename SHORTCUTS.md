@@ -49,6 +49,8 @@
 | `↓` Arrow Down | Move selection down |
 | `Enter` | Open file or toggle directory |
 | `Space` | Toggle directory expansion |
+| `Cmd+Shift+C` | Collapse all directories in sidebar |
+| `Cmd+Shift+E` | Expand all directories in sidebar |
 
 ## Terminal
 

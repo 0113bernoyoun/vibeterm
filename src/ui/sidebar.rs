@@ -7,6 +7,7 @@ use crate::config::RuntimeTheme;
 use crate::layout::PaneId;
 use crate::theme::{tui, mono_font};
 use std::path::PathBuf;
+use crate::context::{FileGitStatus, RepoStatus};
 
 /// File/directory entry for sidebar
 #[derive(Debug, Clone)]
@@ -17,6 +18,10 @@ pub struct FileEntry {
     pub is_expanded: bool,
     pub depth: usize,
     pub is_last: bool,  // Is this the last item at this level?
+    /// Git status for this file (v0.7.0)
+    pub git_status: Option<FileGitStatus>,
+    /// Whether this file is pinned (v0.7.0)
+    pub is_pinned: bool,
 }
 
 impl FileEntry {
@@ -28,6 +33,8 @@ impl FileEntry {
             is_expanded: false,
             depth,
             is_last: false,
+            git_status: None,
+            is_pinned: false,
         }
     }
 }
@@ -44,6 +51,10 @@ pub struct Sidebar<'a> {
     focused_pane: Option<PaneId>,
     /// Is directory loading in progress?
     loading: bool,
+    /// Repository status (v0.7.0)
+    repo_status: Option<&'a RepoStatus>,
+    /// Enable git status display
+    show_git_status: bool,
 }
 
 impl<'a> Sidebar<'a> {
@@ -55,6 +66,8 @@ impl<'a> Sidebar<'a> {
         panes: &'a [(PaneId, PathBuf)],
         focused_pane: Option<PaneId>,
         loading: bool,
+        repo_status: Option<&'a RepoStatus>,
+        show_git_status: bool,
     ) -> Self {
         Self {
             entries,
@@ -64,6 +77,8 @@ impl<'a> Sidebar<'a> {
             panes,
             focused_pane,
             loading,
+            repo_status,
+            show_git_status,
         }
     }
 
@@ -113,12 +128,30 @@ impl<'a> Sidebar<'a> {
                         });
                     });
 
-                    // Project root name below pane tabs
+                    // Project root name below pane tabs with collapse/expand buttons
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(" ").font(mono_font(11.0)));
                         ui.label(RichText::new(self.root_name)
                             .font(mono_font(11.0))
                             .color(self.theme.text));
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Collapse all button
+                            if ui.small_button("⊟")
+                                .on_hover_text("Collapse All (Cmd+Shift+C)")
+                                .clicked()
+                            {
+                                response.collapse_all = true;
+                            }
+
+                            // Expand all button
+                            if ui.small_button("⊞")
+                                .on_hover_text("Expand All (Cmd+Shift+E)")
+                                .clicked()
+                            {
+                                response.expand_all = true;
+                            }
+                        });
                     });
 
                     // Separator line
@@ -148,6 +181,20 @@ impl<'a> Sidebar<'a> {
                                     // Build tree prefix
                                     let prefix = self.build_tree_prefix(entry);
 
+                                    // Git status indicator (v0.7.0)
+                                    let git_indicator = if self.show_git_status {
+                                        entry.git_status.map(|s| s.indicator()).unwrap_or(" ")
+                                    } else {
+                                        " "
+                                    };
+
+                                    // Pin indicator (v0.7.0)
+                                    let pin_indicator = if entry.is_pinned {
+                                        "📌"
+                                    } else {
+                                        ""
+                                    };
+
                                     // Icon based on type
                                     let icon = if entry.is_dir {
                                         if entry.is_expanded {
@@ -159,8 +206,14 @@ impl<'a> Sidebar<'a> {
                                         tui::FILE
                                     };
 
-                                    // Full line text
-                                    let text = format!("{}{}{}", prefix, icon, entry.name);
+                                    // Full line text with git/pin indicators
+                                    let text = format!("{}{} {}{}{}",
+                                        prefix,
+                                        git_indicator,
+                                        pin_indicator,
+                                        icon,
+                                        entry.name
+                                    );
 
                                     let text_color = if is_selected {
                                         self.theme.text
@@ -247,6 +300,20 @@ impl<'a> Sidebar<'a> {
 
         prefix
     }
+
+    /// Get color for git status indicator
+    fn get_git_status_color(&self, status: FileGitStatus) -> egui::Color32 {
+        match status {
+            FileGitStatus::Clean => self.theme.text_dim,
+            FileGitStatus::Modified | FileGitStatus::StagedModified => self.theme.yellow,
+            FileGitStatus::Staged => self.theme.green,
+            FileGitStatus::Untracked => self.theme.secondary,
+            FileGitStatus::Deleted => self.theme.red,
+            FileGitStatus::Renamed => self.theme.cyan,
+            FileGitStatus::Conflicted => self.theme.red,
+            FileGitStatus::Ignored => self.theme.text_dim,
+        }
+    }
 }
 
 /// Response from sidebar interaction
@@ -260,4 +327,10 @@ pub struct SidebarResponse {
     pub toggled_dir: Option<usize>,
     /// Pane mini-tab was clicked (focus that pane)
     pub pane_clicked: Option<PaneId>,
+    /// File pin toggled (v0.7.0)
+    pub toggle_pin: Option<usize>,
+    /// Collapse all directories requested
+    pub collapse_all: bool,
+    /// Expand all directories requested
+    pub expand_all: bool,
 }

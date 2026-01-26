@@ -428,6 +428,8 @@ pub struct VibeTermApp {
     command_palette: CommandPalette,
     /// Tokio runtime for async operations
     tokio_runtime: Arc<Runtime>,
+    /// Context manager for filesystem and git tracking
+    context_manager: crate::context::ContextManager,
 }
 
 impl VibeTermApp {
@@ -454,6 +456,14 @@ impl VibeTermApp {
                 .build()
                 .expect("Failed to create tokio runtime")
         );
+
+        // Create context manager
+        let mut context_manager = crate::context::ContextManager::new(config.context.clone());
+
+        // Set initial directory for git status
+        if let Ok(cwd) = std::env::current_dir() {
+            let _ = context_manager.set_active_directory(&cwd);
+        }
 
         // Create initial workspace
         let workspace = Workspace::new("shell", 0, &cc.egui_ctx, pty_sender.clone())
@@ -484,6 +494,7 @@ impl VibeTermApp {
             loading_dirs: HashMap::new(),
             command_palette: CommandPalette::new(),
             tokio_runtime,
+            context_manager,
         };
 
         // Trigger initial directory load for the first workspace
@@ -652,6 +663,31 @@ impl VibeTermApp {
             // Cmd+B: Toggle sidebar
             if i.key_pressed(Key::B) && modifiers.command {
                 self.sidebar_visible = !self.sidebar_visible;
+            }
+
+            // Debug key input for collapse all
+            if modifiers.shift && (modifiers.command || modifiers.ctrl) {
+                for key in &i.keys_down {
+                    log::info!("Shift+Cmd pressed, key: {:?}", key);
+                }
+            }
+
+            // Cmd+Shift+[: Collapse all directories in sidebar (original)
+            if i.key_pressed(Key::OpenBracket) && (modifiers.command || modifiers.ctrl) && modifiers.shift {
+                log::info!("Collapse all triggered via OpenBracket!");
+                self.collapse_all_directories();
+            }
+
+            // Cmd+Shift+C: Collapse all directories in sidebar (alternative binding)
+            if i.key_pressed(Key::C) && (modifiers.command || modifiers.ctrl) && modifiers.shift {
+                log::info!("Collapse all triggered via C!");
+                self.collapse_all_directories();
+            }
+
+            // Cmd+Shift+E: Expand all directories in sidebar
+            if i.key_pressed(Key::E) && (modifiers.command || modifiers.ctrl) && modifiers.shift {
+                log::info!("Expand all triggered via E!");
+                self.expand_all_directories();
             }
 
             // Cmd+,: Preferences
@@ -850,6 +886,12 @@ impl VibeTermApp {
             if let Some(ws) = self.workspaces.get_mut(result.workspace_id) {
                 ws.sidebar_entries = result.entries;
                 self.loading_dirs.remove(&result.workspace_id);
+
+                // Update context manager with new directory for git status
+                let _ = self.context_manager.set_active_directory(&ws.sidebar_root);
+
+                // Update git status for all entries
+                self.update_sidebar_git_status();
             }
         }
     }
@@ -873,6 +915,54 @@ impl VibeTermApp {
                 });
             }
         });
+    }
+
+    /// Process context manager events
+    fn process_context_events(&mut self) {
+        use crate::context::ContextEvent;
+
+        let events = self.context_manager.poll();
+
+        for event in events {
+            match event {
+                ContextEvent::FileSystemChanged { affected_dir, .. } => {
+                    let ws = &self.workspaces[self.active_workspace];
+                    if affected_dir.starts_with(&ws.sidebar_root) ||
+                       ws.sidebar_root.starts_with(&affected_dir) {
+                        let root = ws.sidebar_root.clone();
+                        self.load_directory_async(self.active_workspace, root);
+                    }
+                }
+                ContextEvent::GitStatusUpdated => {
+                    self.update_sidebar_git_status();
+                }
+                ContextEvent::FilePinned(path) => {
+                    log::info!("File pinned: {:?}", path);
+                    self.update_sidebar_pin_status();
+                }
+                ContextEvent::FileUnpinned(path) => {
+                    log::info!("File unpinned: {:?}", path);
+                    self.update_sidebar_pin_status();
+                }
+                ContextEvent::Error(msg) => {
+                    log::warn!("Context error: {}", msg);
+                }
+            }
+        }
+    }
+
+    fn update_sidebar_git_status(&mut self) {
+        let ws = &mut self.workspaces[self.active_workspace];
+        for entry in &mut ws.sidebar_entries {
+            entry.git_status = Some(self.context_manager.get_git_status(&entry.path));
+        }
+    }
+
+    fn update_sidebar_pin_status(&mut self) {
+        let ws = &mut self.workspaces[self.active_workspace];
+        for entry in &mut ws.sidebar_entries {
+            entry.is_pinned = self.context_manager.is_pinned(&entry.path);
+        }
     }
 
     /// Toggle directory expansion
@@ -904,6 +994,37 @@ impl VibeTermApp {
                 }
             }
         }
+    }
+
+    /// Collapse all directories in sidebar
+    fn collapse_all_directories(&mut self) {
+        let ws = &mut self.workspaces[self.active_workspace];
+
+        // Mark all directories as collapsed
+        for entry in &mut ws.sidebar_entries {
+            if entry.is_dir {
+                entry.is_expanded = false;
+            }
+        }
+
+        // Remove all child entries (depth > 0)
+        ws.sidebar_entries.retain(|entry| entry.depth == 0);
+    }
+
+    /// Expand all directories in sidebar
+    fn expand_all_directories(&mut self) {
+        let ws = &mut self.workspaces[self.active_workspace];
+
+        // Mark all directories as expanded
+        for entry in &mut ws.sidebar_entries {
+            if entry.is_dir {
+                entry.is_expanded = true;
+            }
+        }
+
+        // Reload directory to show all children
+        let root = ws.sidebar_root.clone();
+        self.load_directory_async(self.active_workspace, root);
     }
 
     /// Compute drop zones for all panes except the source pane
@@ -1395,6 +1516,9 @@ impl eframe::App for VibeTermApp {
         // Process async directory loading results
         self.process_dir_load_results();
 
+        // Process context manager events
+        self.process_context_events();
+
         // Show preferences window if open
         if self.show_preferences {
             self.show_preferences_window(ctx);
@@ -1652,6 +1776,10 @@ impl eframe::App for VibeTermApp {
 
                     let loading = self.loading_dirs.get(&self.active_workspace).copied().unwrap_or(false);
 
+                    let repo_status = self.context_manager.repo_status();
+                    let show_git_status = self.config.context.enable_git_status &&
+                                          self.context_manager.is_git_available();
+
                     let sidebar = Sidebar::new(
                         &ws.sidebar_entries,
                         ws.selected_sidebar_entry,
@@ -1660,6 +1788,8 @@ impl eframe::App for VibeTermApp {
                         &panes_info,
                         Some(ws.focused_pane),
                         loading,
+                        repo_status,
+                        show_git_status,
                     );
                     let response = sidebar.show(ui);
 
@@ -1678,6 +1808,20 @@ impl eframe::App for VibeTermApp {
                             }
                         }
                     }
+                    // Handle pin toggle
+                    if let Some(idx) = response.toggle_pin {
+                        let ws = &self.workspaces[self.active_workspace];
+                        if let Some(entry) = ws.sidebar_entries.get(idx) {
+                            self.context_manager.toggle_pin(entry.path.clone());
+                        }
+                    }
+                    // Handle collapse/expand all
+                    if response.collapse_all {
+                        self.collapse_all_directories();
+                    }
+                    if response.expand_all {
+                        self.expand_all_directories();
+                    }
                     // Handle pane click - focus that pane and maybe reload sidebar
                     if let Some(clicked_pane) = response.pane_clicked {
                         let ws = &mut self.workspaces[self.active_workspace];
@@ -1691,6 +1835,10 @@ impl eframe::App for VibeTermApp {
                                 // Only reload if root changed
                                 if new_root != ws.sidebar_root {
                                     ws.sidebar_root = new_root.clone();
+
+                                    // Update context manager with new directory
+                                    let _ = self.context_manager.set_active_directory(&new_root);
+
                                     self.load_directory_async(self.active_workspace, new_root);
                                 }
                             }
