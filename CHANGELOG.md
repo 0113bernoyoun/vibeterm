@@ -1,6 +1,45 @@
 # VibeTerm Changelog
 
-## 2026-01-24 - Code Cleanup & Event System Completion
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.6.0] - 2025-01-26
+
+### Added
+
+#### P0: Multi-Pane Contextual Sidebar
+- CWD tracking per terminal pane (libproc/procfs)
+- Project root auto-detection (.git, Cargo.toml, package.json, etc.)
+- Sidebar auto-switches to focused pane's directory
+- Pane indicators (clickable mini-tabs)
+- Async directory loading (max 1000 files, 10 levels deep)
+
+#### P1: Scrollback & Text Selection
+- Scrollback buffer support (egui_term built-in)
+- Text selection: click-drag, double-click word, triple-click line
+- Clipboard copy with Cmd+C
+
+#### P2: Command Palette
+- Quick command access with Cmd+P (Ctrl+P on Linux)
+- Fuzzy search across 9 commands
+- Keyboard navigation (arrows + Enter)
+
+#### P2: Tab Drag-and-Drop
+- Reorder workspace tabs by dragging
+- 5px threshold to prevent accidental drags
+- Visual ghost preview and drop indicators
+
+### Technical
+- Added dependencies: libproc, procfs, fuzzy-matcher
+- Created modules: src/project.rs, src/pty_tracker.rs, src/ui/command_palette.rs
+- Tokio runtime integration for async operations
+
+### Fixed
+- Critical: Tokio runtime initialization panic
+
+## [0.4.0] - 2026-01-24 - Code Cleanup & Event System Completion
 
 ### Fixed
 - ✅ Resolved all compiler warnings

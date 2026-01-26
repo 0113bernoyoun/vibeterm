@@ -4,6 +4,7 @@
 
 use egui::{Button, Frame, RichText, ScrollArea, Sense, Ui};
 use crate::config::RuntimeTheme;
+use crate::layout::PaneId;
 use crate::theme::{tui, mono_font};
 use std::path::PathBuf;
 
@@ -37,6 +38,12 @@ pub struct Sidebar<'a> {
     selected_index: Option<usize>,
     root_name: &'a str,
     theme: &'a RuntimeTheme,
+    /// Pane info: (pane_id, current_dir) for all terminal panes
+    panes: &'a [(PaneId, PathBuf)],
+    /// Currently focused pane
+    focused_pane: Option<PaneId>,
+    /// Is directory loading in progress?
+    loading: bool,
 }
 
 impl<'a> Sidebar<'a> {
@@ -45,12 +52,18 @@ impl<'a> Sidebar<'a> {
         selected_index: Option<usize>,
         root_name: &'a str,
         theme: &'a RuntimeTheme,
+        panes: &'a [(PaneId, PathBuf)],
+        focused_pane: Option<PaneId>,
+        loading: bool,
     ) -> Self {
         Self {
             entries,
             selected_index,
             root_name,
             theme,
+            panes,
+            focused_pane,
+            loading,
         }
     }
 
@@ -62,25 +75,50 @@ impl<'a> Sidebar<'a> {
             .fill(self.theme.surface)
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    // Header with project name (TUI style)
+                    // Header with pane indicators
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{}{}{}",
+                        ui.label(RichText::new(format!("{}{}",
                             tui::TOP_LEFT,
-                            tui::HORIZONTAL.to_string().repeat(3),
-                            " "
+                            tui::HORIZONTAL.to_string().repeat(2),
                         )).font(mono_font(12.0)).color(self.theme.border));
 
-                        ui.label(RichText::new(self.root_name)
-                            .font(mono_font(12.0))
-                            .color(self.theme.text));
+                        // Pane mini-tabs
+                        for (pane_id, _pane_dir) in self.panes {
+                            let is_focused = self.focused_pane == Some(*pane_id);
+                            let pane_label = format!(" {} ", pane_id.0);
+
+                            let text_color = if is_focused {
+                                self.theme.primary
+                            } else {
+                                self.theme.text_dim
+                            };
+
+                            let btn = Button::new(
+                                RichText::new(&pane_label)
+                                    .font(mono_font(10.0))
+                                    .color(text_color)
+                            )
+                            .fill(self.theme.surface)
+                            .frame(false);
+
+                            if ui.add(btn).clicked() {
+                                response.pane_clicked = Some(*pane_id);
+                            }
+                        }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(format!(" {}{}{}",
-                                tui::HORIZONTAL.to_string().repeat(3),
-                                tui::TOP_RIGHT,
-                                ""
+                            ui.label(RichText::new(format!(" {}",
+                                tui::TOP_RIGHT
                             )).font(mono_font(12.0)).color(self.theme.border));
                         });
+                    });
+
+                    // Project root name below pane tabs
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(" ").font(mono_font(11.0)));
+                        ui.label(RichText::new(self.root_name)
+                            .font(mono_font(11.0))
+                            .color(self.theme.text));
                     });
 
                     // Separator line
@@ -94,6 +132,16 @@ impl<'a> Sidebar<'a> {
                         .id_salt("sidebar_files")
                         .show(ui, |ui| {
                             ui.vertical(|ui| {
+                                // Show loading indicator
+                                if self.loading {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(" 🔄 Loading...")
+                                            .font(mono_font(11.0))
+                                            .color(self.theme.text_dim));
+                                    });
+                                    return;
+                                }
+
                                 for (idx, entry) in self.entries.iter().enumerate() {
                                     let is_selected = self.selected_index == Some(idx);
 
@@ -210,4 +258,6 @@ pub struct SidebarResponse {
     pub opened_file: Option<usize>,
     /// Directory expand/collapse toggled
     pub toggled_dir: Option<usize>,
+    /// Pane mini-tab was clicked (focus that pane)
+    pub pane_clicked: Option<PaneId>,
 }

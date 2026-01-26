@@ -133,6 +133,8 @@ pub struct UiConfig {
     pub status_bar_height: f32,
     /// Show sidebar by default
     pub show_sidebar: bool,
+    /// Enable CWD polling for terminal tracking (disable for performance)
+    pub enable_cwd_polling: bool,
 }
 
 impl Default for UiConfig {
@@ -142,6 +144,7 @@ impl Default for UiConfig {
             tab_bar_height: 28.0,
             status_bar_height: 20.0,
             show_sidebar: true,
+            enable_cwd_polling: true,
         }
     }
 }

@@ -2,15 +2,19 @@
 //!
 //! Main application state and egui integration
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use egui::{CentralPanel, Context, Event, Frame, ImeEvent, Key, SidePanel, TopBottomPanel, Widget};
 use egui_term::{BackendCommand, BackendSettings, PtyEvent, TerminalBackend, TerminalView};
+use tokio::runtime::Runtime;
 use crate::config::{Config, RuntimeTheme};
+use crate::directory_scanner::scan_directory;
 use crate::layout::{LayoutNode, PaneId, SplitDirection, ComputedLayout, DIVIDER_WIDTH, DEFAULT_SPLIT_RATIO};
 use crate::menu::{self, MenuAction};
 use crate::theme;
-use crate::ui::{FileEntry, Sidebar, StatusBar, TabBar, TabInfo};
+use crate::ui::{FileEntry, Sidebar, StatusBar, TabBar, TabInfo, CommandPalette};
 
 /// State for pane drag-and-drop repositioning
 #[derive(Debug, Clone)]
@@ -23,6 +27,15 @@ pub struct PaneDragState {
     pub current_pos: egui::Pos2,
     /// Has drag exceeded 8px threshold?
     pub drag_active: bool,
+}
+
+/// Tab drag state
+#[derive(Debug, Clone)]
+struct TabDragState {
+    source_index: usize,
+    start_pos: egui::Pos2,
+    current_pos: egui::Pos2,
+    drag_active: bool,  // true after 5px threshold
 }
 
 /// Where a pane can be dropped
@@ -66,14 +79,34 @@ pub enum TabContent {
 struct TerminalInstance {
     backend: TerminalBackend,
     id: u64,
+    /// Current working directory (tracked for sidebar root switching)
+    current_dir: PathBuf,
+    /// Detected project root (if any marker files found)
+    project_root: Option<PathBuf>,
+    /// PTY process tracker for CWD monitoring (None if tracking unavailable)
+    pty_tracker: Option<crate::pty_tracker::PtyTracker>,
 }
 
 impl std::fmt::Debug for TerminalInstance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TerminalInstance")
             .field("id", &self.id)
+            .field("current_dir", &self.current_dir)
+            .field("project_root", &self.project_root)
+            .field("pty_tracker", &self.pty_tracker.as_ref().map(|t| t.pid()))
             .finish()
     }
+}
+
+/// Message types for async directory loading
+struct DirLoadRequest {
+    workspace_id: usize,
+    path: PathBuf,
+}
+
+struct DirLoadResult {
+    workspace_id: usize,
+    entries: Vec<FileEntry>,
 }
 
 /// Workspace containing panes in a binary split tree
@@ -82,6 +115,12 @@ struct Workspace {
     root: LayoutNode<TabContent>,
     focused_pane: PaneId,
     next_pane_id: u64,
+    /// Sidebar entries for this workspace
+    sidebar_entries: Vec<FileEntry>,
+    /// Selected sidebar entry index
+    selected_sidebar_entry: Option<usize>,
+    /// Current sidebar root path
+    sidebar_root: PathBuf,
 }
 
 /// Transform a LayoutNode by splitting a target leaf
@@ -169,15 +208,32 @@ impl Workspace {
         let name = name.into();
         let backend = create_terminal_backend(terminal_id, ctx, pty_sender)?;
         let pane_id = PaneId(0);
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let project_root = crate::project::detect_project_root(&current_dir);
+
+        // Try to find and track the shell process
+        // The shell was just spawned, so we look for recently started shell processes
+        let pty_tracker = find_shell_pid().and_then(crate::pty_tracker::PtyTracker::new);
+
+        let sidebar_root = project_root.as_ref().unwrap_or(&current_dir).clone();
 
         Ok(Self {
             name,
             root: LayoutNode::Leaf {
                 id: pane_id,
-                content: TabContent::Terminal(TerminalInstance { backend, id: terminal_id }),
+                content: TabContent::Terminal(TerminalInstance {
+                    backend,
+                    id: terminal_id,
+                    current_dir,
+                    project_root,
+                    pty_tracker,
+                }),
             },
             focused_pane: pane_id,
             next_pane_id: 1,
+            sidebar_entries: Vec::new(),
+            selected_sidebar_entry: None,
+            sidebar_root,
         })
     }
 
@@ -194,9 +250,21 @@ impl Workspace {
         let backend = create_terminal_backend(terminal_id, ctx, pty_sender)?;
         let new_pane_id = PaneId(self.next_pane_id);
         self.next_pane_id += 1;
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let project_root = crate::project::detect_project_root(&current_dir);
 
         let target_id = self.focused_pane;
-        let new_content = TabContent::Terminal(TerminalInstance { backend, id: terminal_id });
+
+        // Try to find and track the shell process
+        let pty_tracker = find_shell_pid().and_then(crate::pty_tracker::PtyTracker::new);
+
+        let new_content = TabContent::Terminal(TerminalInstance {
+            backend,
+            id: terminal_id,
+            current_dir,
+            project_root,
+            pty_tracker,
+        });
 
         // Take ownership, transform, put back
         let old_root = std::mem::replace(&mut self.root, LayoutNode::Leaf {
@@ -332,11 +400,7 @@ pub struct VibeTermApp {
     next_terminal_id: u64,
     /// Sidebar visibility
     sidebar_visible: bool,
-    /// Sidebar entries
-    sidebar_entries: Vec<FileEntry>,
-    /// Selected sidebar entry
-    sidebar_selected: Option<usize>,
-    /// Project root path
+    /// Project root path (deprecated - now per workspace)
     project_root: Option<PathBuf>,
     /// PTY event channel
     pty_sender: Sender<(u64, PtyEvent)>,
@@ -347,12 +411,23 @@ pub struct VibeTermApp {
     dragging_divider: Option<(usize, usize)>,
     /// Pane being dragged for repositioning
     dragging_pane: Option<PaneDragState>,
+    /// Tab being dragged
+    dragging_tab: Option<TabDragState>,
     /// Show preferences window
     show_preferences: bool,
     /// IME is currently composing (preedit active)
     ime_composing: bool,
     /// Cached terminal theme (regenerated when config changes)
     cached_terminal_theme: egui_term::TerminalTheme,
+    /// Channel for async directory loading
+    dir_load_tx: tokio::sync::mpsc::UnboundedSender<DirLoadResult>,
+    dir_load_rx: tokio::sync::mpsc::UnboundedReceiver<DirLoadResult>,
+    /// Loading state per workspace
+    loading_dirs: HashMap<usize, bool>,
+    /// Command palette
+    command_palette: CommandPalette,
+    /// Tokio runtime for async operations
+    tokio_runtime: Arc<Runtime>,
 }
 
 impl VibeTermApp {
@@ -369,36 +444,53 @@ impl VibeTermApp {
         // Create PTY event channel
         let (pty_sender, pty_receiver) = std::sync::mpsc::channel();
 
+        // Create async directory loading channel
+        let (dir_load_tx, dir_load_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Create tokio runtime for async operations
+        let tokio_runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime")
+        );
+
         // Create initial workspace
         let workspace = Workspace::new("shell", 0, &cc.egui_ctx, pty_sender.clone())
             .expect("Failed to create initial workspace");
 
         // Load sidebar entries from current directory
         let project_root = std::env::current_dir().ok();
-        let sidebar_entries = project_root
-            .as_ref()
-            .map(|p| load_directory_entries(p, 0))
-            .unwrap_or_default();
 
-        Self {
+        let mut app = Self {
             config,
             theme,
             workspaces: vec![workspace],
             active_workspace: 0,
             next_terminal_id: 1,
             sidebar_visible: true,
-            sidebar_entries,
-            sidebar_selected: None,
             project_root,
             pty_sender,
             pty_receiver,
             ctx: cc.egui_ctx.clone(),
             dragging_divider: None,
             dragging_pane: None,
+            dragging_tab: None,
             show_preferences: false,
             ime_composing: false,
             cached_terminal_theme,
-        }
+            dir_load_tx,
+            dir_load_rx,
+            loading_dirs: HashMap::new(),
+            command_palette: CommandPalette::new(),
+            tokio_runtime,
+        };
+
+        // Trigger initial directory load for the first workspace
+        let initial_root = app.workspaces[0].sidebar_root.clone();
+        app.load_directory_async(0, initial_root);
+
+        app
     }
 
     /// Get current workspace
@@ -441,6 +533,7 @@ impl VibeTermApp {
         let pane_id = PaneId(0);
 
         // Create a new workspace with a file viewer
+        let sidebar_root = path.parent().unwrap_or(std::path::Path::new("/")).to_path_buf();
         let workspace = Workspace {
             name,
             root: LayoutNode::Leaf {
@@ -453,6 +546,9 @@ impl VibeTermApp {
             },
             focused_pane: pane_id,
             next_pane_id: 1,
+            sidebar_entries: Vec::new(),
+            selected_sidebar_entry: None,
+            sidebar_root,
         };
 
         self.workspaces.push(workspace);
@@ -693,9 +789,96 @@ impl VibeTermApp {
         }
     }
 
+    /// Poll PTY trackers and update terminal CWDs
+    ///
+    /// This is called every frame. PTY trackers internally manage their polling
+    /// interval (500ms for focused, 2s for unfocused).
+    ///
+    /// Can be disabled via `config.ui.enable_cwd_polling` for users with
+    /// performance concerns.
+    fn poll_pty_trackers(&mut self) {
+        // Skip polling if disabled in config
+        if !self.config.ui.enable_cwd_polling {
+            return;
+        }
+
+        use std::time::Duration;
+
+        let focused_workspace = self.active_workspace;
+
+        for (ws_idx, workspace) in self.workspaces.iter_mut().enumerate() {
+            let focused_pane = workspace.focused_pane;
+            let is_active_workspace = ws_idx == focused_workspace;
+
+            // Collect mutable references to terminal contents
+            let contents = workspace.root.collect_contents_mut();
+
+            for (pane_id, content) in contents {
+                if let TabContent::Terminal(terminal) = content {
+                    if let Some(ref mut tracker) = terminal.pty_tracker {
+                        // Set poll interval based on focus state
+                        // Focused pane in active workspace: 500ms
+                        // Unfocused or inactive workspace: 2s
+                        let interval = if is_active_workspace && pane_id == focused_pane {
+                            Duration::from_millis(500)
+                        } else {
+                            Duration::from_secs(2)
+                        };
+                        tracker.set_interval(interval);
+
+                        // Poll and update CWD if changed
+                        if tracker.poll() {
+                            let new_dir = tracker.current_dir().clone();
+                            log::debug!(
+                                "Terminal {} CWD changed: {:?} -> {:?}",
+                                terminal.id,
+                                terminal.current_dir,
+                                new_dir
+                            );
+                            terminal.current_dir = new_dir.clone();
+                            terminal.project_root = crate::project::detect_project_root(&new_dir);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process async directory loading results
+    fn process_dir_load_results(&mut self) {
+        while let Ok(result) = self.dir_load_rx.try_recv() {
+            if let Some(ws) = self.workspaces.get_mut(result.workspace_id) {
+                ws.sidebar_entries = result.entries;
+                self.loading_dirs.remove(&result.workspace_id);
+            }
+        }
+    }
+
+    /// Start async directory loading
+    fn load_directory_async(&mut self, workspace_id: usize, path: PathBuf) {
+        self.loading_dirs.insert(workspace_id, true);
+
+        let tx = self.dir_load_tx.clone();
+        let runtime = self.tokio_runtime.clone();
+
+        runtime.spawn(async move {
+            let entries = tokio::task::spawn_blocking(move || {
+                scan_directory(&path, 10, 1000)
+            }).await;
+
+            if let Ok(entries) = entries {
+                let _ = tx.send(DirLoadResult {
+                    workspace_id,
+                    entries,
+                });
+            }
+        });
+    }
+
     /// Toggle directory expansion
     fn toggle_directory(&mut self, idx: usize) {
-        if let Some(entry) = self.sidebar_entries.get_mut(idx) {
+        let ws = &mut self.workspaces[self.active_workspace];
+        if let Some(entry) = ws.sidebar_entries.get_mut(idx) {
             if entry.is_dir {
                 entry.is_expanded = !entry.is_expanded;
 
@@ -703,20 +886,20 @@ impl VibeTermApp {
                     let children = load_directory_entries(&entry.path, entry.depth + 1);
                     let insert_pos = idx + 1;
                     for (i, child) in children.into_iter().enumerate() {
-                        self.sidebar_entries.insert(insert_pos + i, child);
+                        ws.sidebar_entries.insert(insert_pos + i, child);
                     }
                 } else {
                     let depth = entry.depth;
                     let mut remove_count = 0;
-                    for i in (idx + 1)..self.sidebar_entries.len() {
-                        if self.sidebar_entries[i].depth > depth {
+                    for i in (idx + 1)..ws.sidebar_entries.len() {
+                        if ws.sidebar_entries[i].depth > depth {
                             remove_count += 1;
                         } else {
                             break;
                         }
                     }
                     for _ in 0..remove_count {
-                        self.sidebar_entries.remove(idx + 1);
+                        ws.sidebar_entries.remove(idx + 1);
                     }
                 }
             }
@@ -778,6 +961,24 @@ impl VibeTermApp {
         }
 
         zones
+    }
+
+    /// Find drop zone for tab at cursor position
+    fn find_tab_drop_zone(&self, cursor_pos: egui::Pos2, tab_rects: &[(usize, egui::Rect)]) -> Option<usize> {
+        for (idx, rect) in tab_rects {
+            // Check if cursor is in left half of tab (insert before)
+            let mid_x = rect.center().x;
+            if cursor_pos.x < mid_x && rect.contains(cursor_pos) {
+                return Some(*idx);
+            }
+            // Check if cursor is in right half (insert after)
+            if cursor_pos.x >= mid_x && rect.contains(cursor_pos) {
+                return Some(*idx + 1);
+            }
+        }
+
+        // Default to end
+        None
     }
 
     /// Execute a pane drop operation
@@ -1168,6 +1369,14 @@ impl eframe::App for VibeTermApp {
         // Enable IME for Korean/Japanese/Chinese input
         ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(true));
 
+        // Command palette toggle (Cmd+P or Ctrl+P)
+        if ctx.input(|i| {
+            i.key_pressed(Key::P) &&
+            (i.modifiers.command_only() || (i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift))
+        }) {
+            self.command_palette.toggle();
+        }
+
         // Handle keyboard shortcuts
         self.handle_shortcuts(ctx);
 
@@ -1180,9 +1389,53 @@ impl eframe::App for VibeTermApp {
         // Process PTY events
         self.process_pty_events();
 
+        // Poll PTY trackers for CWD changes
+        self.poll_pty_trackers();
+
+        // Process async directory loading results
+        self.process_dir_load_results();
+
         // Show preferences window if open
         if self.show_preferences {
             self.show_preferences_window(ctx);
+        }
+
+        // Show command palette and execute commands
+        if let Some(command_id) = self.command_palette.show(ctx, &self.theme) {
+            match command_id {
+                "new_tab" => {
+                    self.create_new_tab();
+                }
+                "close_tab" => {
+                    self.close_current_pane();
+                }
+                "split_horizontal" => {
+                    self.split_pane_horizontal();
+                }
+                "split_vertical" => {
+                    self.split_pane_vertical();
+                }
+                "close_pane" => {
+                    self.close_current_pane();
+                }
+                "toggle_sidebar" => {
+                    self.sidebar_visible = !self.sidebar_visible;
+                }
+                "settings" => {
+                    self.show_preferences = true;
+                }
+                "next_tab" => {
+                    if self.active_workspace < self.workspaces.len() - 1 {
+                        self.active_workspace += 1;
+                    }
+                }
+                "prev_tab" => {
+                    if self.active_workspace > 0 {
+                        self.active_workspace -= 1;
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Request repaint at reasonable interval for terminal updates and cursor blink
@@ -1198,12 +1451,161 @@ impl eframe::App for VibeTermApp {
                 let tab_bar = TabBar::new(&tabs, self.active_workspace, &self.theme);
                 let response = tab_bar.show(ui);
 
+                // Handle tab drag-and-drop
+                let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+                let clicked_primary = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+                let pointer_released = ui.input(|i| i.pointer.any_released());
+
+                // Detect drag start
+                if clicked_primary && self.dragging_tab.is_none() {
+                    if let (Some(tab_idx), Some(pos)) = (response.tab_hovered, pointer_pos) {
+                        self.dragging_tab = Some(TabDragState {
+                            source_index: tab_idx,
+                            start_pos: pos,
+                            current_pos: pos,
+                            drag_active: false,
+                        });
+                    }
+                }
+
+                // Update drag state
+                let mut cancel_drag = false;
+                let mut drop_info: Option<(usize, bool)> = None; // (source_index, drag_active)
+
+                if let Some(ref mut drag_state) = self.dragging_tab {
+                    if let Some(pos) = pointer_pos {
+                        drag_state.current_pos = pos;
+
+                        // Activate after 5px threshold
+                        if !drag_state.drag_active {
+                            let delta = drag_state.current_pos - drag_state.start_pos;
+                            if delta.length() >= 5.0 {
+                                drag_state.drag_active = true;
+                            }
+                        }
+                    }
+
+                    // Cancel on ESC
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel_drag = true;
+                    }
+
+                    // Handle drop
+                    if pointer_released {
+                        drop_info = Some((drag_state.source_index, drag_state.drag_active));
+                    }
+                }
+
+                if cancel_drag {
+                    self.dragging_tab = None;
+                }
+
+                if let Some((source, drag_active)) = drop_info {
+                    if drag_active {
+                        if let Some(current_pos) = pointer_pos {
+                            if let Some(drop_index) = self.find_tab_drop_zone(current_pos, &response.tab_rects) {
+                                // Reorder workspaces
+                                if source != drop_index {
+                                    let workspace = self.workspaces.remove(source);
+
+                                    // Adjust drop index if removing from before it
+                                    let adjusted_drop = if source < drop_index {
+                                        drop_index - 1
+                                    } else {
+                                        drop_index
+                                    };
+
+                                    self.workspaces.insert(adjusted_drop, workspace);
+
+                                    // Update active workspace index
+                                    if self.active_workspace == source {
+                                        self.active_workspace = adjusted_drop;
+                                    } else if source < self.active_workspace && self.active_workspace <= adjusted_drop {
+                                        self.active_workspace -= 1;
+                                    } else if source > self.active_workspace && self.active_workspace >= adjusted_drop {
+                                        self.active_workspace += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.dragging_tab = None;
+                }
+
+                // Render ghost tab and drop zone indicator
+                if let Some(ref drag_state) = self.dragging_tab {
+                    if drag_state.drag_active {
+                        // Ghost tab following cursor
+                        let ghost_size = egui::vec2(80.0, 30.0);
+                        let ghost_pos = drag_state.current_pos - ghost_size * 0.5;
+                        let ghost_rect = egui::Rect::from_min_size(ghost_pos, ghost_size);
+
+                        ui.painter().rect_filled(
+                            ghost_rect,
+                            4.0,
+                            egui::Color32::from_rgba_unmultiplied(
+                                self.theme.primary.r(),
+                                self.theme.primary.g(),
+                                self.theme.primary.b(),
+                                150,
+                            ),
+                        );
+
+                        ui.painter().rect_stroke(
+                            ghost_rect,
+                            4.0,
+                            egui::Stroke::new(2.0, self.theme.primary),
+                            egui::StrokeKind::Outside,
+                        );
+
+                        let ghost_text = format!("Tab {}", drag_state.source_index + 1);
+                        ui.painter().text(
+                            ghost_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            ghost_text,
+                            egui::FontId::proportional(12.0),
+                            self.theme.text,
+                        );
+
+                        // Drop zone indicator
+                        if let Some(drop_index) = self.find_tab_drop_zone(drag_state.current_pos, &response.tab_rects) {
+                            // Find the position to draw indicator
+                            if drop_index > 0 && drop_index <= response.tab_rects.len() {
+                                if let Some((_, rect)) = response.tab_rects.get(drop_index.saturating_sub(1)) {
+                                    let x = rect.right();
+                                    let top = rect.top();
+                                    let bottom = rect.bottom();
+
+                                    ui.painter().line_segment(
+                                        [egui::pos2(x, top), egui::pos2(x, bottom)],
+                                        egui::Stroke::new(3.0, self.theme.primary),
+                                    );
+                                }
+                            } else if drop_index == 0 && !response.tab_rects.is_empty() {
+                                if let Some((_, rect)) = response.tab_rects.first() {
+                                    let x = rect.left();
+                                    let top = rect.top();
+                                    let bottom = rect.bottom();
+
+                                    ui.painter().line_segment(
+                                        [egui::pos2(x, top), egui::pos2(x, bottom)],
+                                        egui::Stroke::new(3.0, self.theme.primary),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Some(idx) = response.selected_tab {
-                    self.active_workspace = idx;
-                    // Reset focused pane to first pane when switching tabs
-                    let pane_ids = self.workspaces[idx].pane_ids();
-                    if let Some(first_id) = pane_ids.first() {
-                        self.workspaces[idx].focused_pane = *first_id;
+                    // Only switch tabs if not dragging
+                    if self.dragging_tab.is_none() {
+                        self.active_workspace = idx;
+                        // Reset focused pane to first pane when switching tabs
+                        let pane_ids = self.workspaces[idx].pane_ids();
+                        if let Some(first_id) = pane_ids.first() {
+                            self.workspaces[idx].focused_pane = *first_id;
+                        }
                     }
                 }
                 if let Some(idx) = response.closed_tab {
@@ -1233,32 +1635,64 @@ impl eframe::App for VibeTermApp {
                 .frame(Frame::NONE)
                 .resizable(true)
                 .show(ctx, |ui| {
-                    let root_name = self
-                        .project_root
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Project".to_string());
+                    let ws = &self.workspaces[self.active_workspace];
+
+                    // Collect pane info from layout tree
+                    let panes_info: Vec<(PaneId, PathBuf)> = {
+                        let mut info = Vec::new();
+                        collect_pane_info(&ws.root, &mut info);
+                        info
+                    };
+
+                    let root_name = ws.sidebar_root
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("/")
+                        .to_string();
+
+                    let loading = self.loading_dirs.get(&self.active_workspace).copied().unwrap_or(false);
 
                     let sidebar = Sidebar::new(
-                        &self.sidebar_entries,
-                        self.sidebar_selected,
+                        &ws.sidebar_entries,
+                        ws.selected_sidebar_entry,
                         &root_name,
                         &self.theme,
+                        &panes_info,
+                        Some(ws.focused_pane),
+                        loading,
                     );
                     let response = sidebar.show(ui);
 
                     if let Some(idx) = response.selected {
-                        self.sidebar_selected = Some(idx);
+                        self.workspaces[self.active_workspace].selected_sidebar_entry = Some(idx);
                     }
                     if let Some(idx) = response.toggled_dir {
                         self.toggle_directory(idx);
                     }
                     // Double-click file opens in new tab
                     if let Some(idx) = response.opened_file {
-                        if let Some(entry) = self.sidebar_entries.get(idx) {
+                        let ws = &self.workspaces[self.active_workspace];
+                        if let Some(entry) = ws.sidebar_entries.get(idx) {
                             if !entry.is_dir {
                                 self.create_file_tab(entry.path.clone());
+                            }
+                        }
+                    }
+                    // Handle pane click - focus that pane and maybe reload sidebar
+                    if let Some(clicked_pane) = response.pane_clicked {
+                        let ws = &mut self.workspaces[self.active_workspace];
+                        ws.focused_pane = clicked_pane;
+
+                        // Determine new sidebar root
+                        if let Some(content) = ws.root.get_content(clicked_pane) {
+                            if let TabContent::Terminal(terminal) = content {
+                                let new_root = terminal.project_root.as_ref().unwrap_or(&terminal.current_dir).clone();
+
+                                // Only reload if root changed
+                                if new_root != ws.sidebar_root {
+                                    ws.sidebar_root = new_root.clone();
+                                    self.load_directory_async(self.active_workspace, new_root);
+                                }
                             }
                         }
                     }
@@ -1296,6 +1730,108 @@ fn create_terminal_backend(
 
     let backend = TerminalBackend::new(id, ctx.clone(), pty_sender, settings)?;
     Ok(backend)
+}
+
+/// Find the most recently spawned shell process that is a child of the current process.
+///
+/// This is a heuristic approach since egui_term doesn't expose the child PID directly.
+/// We scan for shell processes that:
+/// 1. Have our process as an ancestor (parent or grandparent)
+/// 2. Were recently started
+///
+/// Returns None on unsupported platforms or if no matching process is found.
+/// Includes a 2-second timeout to prevent blocking on slow systems.
+#[cfg(target_os = "macos")]
+fn find_shell_pid() -> Option<u32> {
+    use libproc::processes::{pids_by_type, ProcFilter};
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(2);
+
+    let our_pid = std::process::id();
+
+    // Get list of all processes
+    let pids = pids_by_type(ProcFilter::All).ok()?;
+
+    // Find shell processes whose parent is our process
+    // egui_term spawns the shell directly, so the shell's parent should be us
+    for &pid in &pids {
+        // Check timeout periodically to avoid blocking on slow systems
+        if start.elapsed() > timeout {
+            log::warn!("find_shell_pid timeout after {:?}", timeout);
+            return None;
+        }
+
+        if let Some(ppid) = get_parent_pid(pid) {
+            if ppid == our_pid {
+                // Found a child process - this is likely our shell
+                return Some(pid);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn get_parent_pid(pid: u32) -> Option<u32> {
+    use libproc::libproc::bsd_info::BSDInfo;
+    use libproc::libproc::proc_pid::pidinfo;
+
+    pidinfo::<BSDInfo>(pid as i32, 0)
+        .ok()
+        .map(|info| info.pbi_ppid)
+}
+
+#[cfg(target_os = "linux")]
+fn find_shell_pid() -> Option<u32> {
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(2);
+
+    let our_pid = std::process::id();
+
+    // Read /proc to find child processes
+    if let Ok(entries) = fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            // Check timeout periodically to avoid blocking on slow systems
+            if start.elapsed() > timeout {
+                log::warn!("find_shell_pid timeout after {:?}", timeout);
+                return None;
+            }
+
+            let name = entry.file_name();
+            if let Ok(pid) = name.to_string_lossy().parse::<u32>() {
+                // Read the stat file to get parent PID
+                let stat_path = format!("/proc/{}/stat", pid);
+                if let Ok(stat) = fs::read_to_string(&stat_path) {
+                    // Format: pid (comm) state ppid ...
+                    // Find the closing paren, then parse the ppid
+                    if let Some(close_paren) = stat.rfind(')') {
+                        let rest = &stat[close_paren + 2..]; // Skip ") "
+                        let fields: Vec<&str> = rest.split_whitespace().collect();
+                        if fields.len() >= 2 {
+                            if let Ok(ppid) = fields[1].parse::<u32>() {
+                                if ppid == our_pid {
+                                    return Some(pid);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn find_shell_pid() -> Option<u32> {
+    None
 }
 
 /// Load directory entries for sidebar
@@ -1336,4 +1872,19 @@ fn load_directory_entries(path: &PathBuf, depth: usize) -> Vec<FileEntry> {
     }
 
     entries
+}
+
+/// Collect pane info (id, current_dir) from layout tree
+fn collect_pane_info(node: &LayoutNode<TabContent>, out: &mut Vec<(PaneId, PathBuf)>) {
+    match node {
+        LayoutNode::Leaf { id, content } => {
+            if let TabContent::Terminal(terminal) = content {
+                out.push((*id, terminal.current_dir.clone()));
+            }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            collect_pane_info(first, out);
+            collect_pane_info(second, out);
+        }
+    }
 }

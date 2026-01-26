@@ -49,6 +49,9 @@ impl<'a> TabBar<'a> {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
 
+                    // Track tab rectangles for drag-and-drop
+                    let mut tab_rects = Vec::new();
+
                     // Draw tabs
                     for (idx, tab) in self.tabs.iter().enumerate() {
                         let is_active = idx == self.active_tab;
@@ -84,10 +87,16 @@ impl<'a> TabBar<'a> {
 
                         let tab_response = ui.add(tab_btn);
 
-                        // Handle hover styling
-                        if tab_response.hovered() && !is_active {
-                            let rect = tab_response.rect;
-                            ui.painter().rect_filled(rect, 0.0, self.theme.surface_light);
+                        // Store tab rectangle for drag detection
+                        tab_rects.push((idx, tab_response.rect));
+
+                        // Track hovered tab
+                        if tab_response.hovered() {
+                            response.tab_hovered = Some(idx);
+                            if !is_active {
+                                let rect = tab_response.rect;
+                                ui.painter().rect_filled(rect, 0.0, self.theme.surface_light);
+                            }
                         }
 
                         // Active tab bottom indicator
@@ -128,6 +137,9 @@ impl<'a> TabBar<'a> {
                         // Right side info (optional)
                         ui.label(RichText::new(format!("{}", tui::VERTICAL)).font(mono_font(12.0)).color(self.theme.border));
                     });
+
+                    // Store tab rectangles in response
+                    response.tab_rects = tab_rects;
                 });
 
                 // Bottom border line
@@ -148,4 +160,6 @@ pub struct TabBarResponse {
     pub selected_tab: Option<usize>,
     pub closed_tab: Option<usize>,
     pub new_tab_requested: bool,
+    pub tab_rects: Vec<(usize, egui::Rect)>,
+    pub tab_hovered: Option<usize>,
 }

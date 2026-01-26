@@ -1,0 +1,87 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║                VibeTerm P0-P2 QA Testing Checklist                   ║
+║                        Version 0.6.0                                 ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+BEFORE TESTING:
+[ ] Kill existing VibeTerm processes: killall vibeterm
+[ ] Open Activity Monitor (Applications → Utilities)
+[ ] Open Console.app for crash monitoring
+[ ] Run: ./run_qa_tests.sh
+[ ] Review QA_SHORTCUTS.md for keyboard shortcuts
+[ ] Have TextEdit or Notes.app ready for clipboard testing
+
+TEST EXECUTION:
+[ ] Launch VibeTerm (via script or manually)
+[ ] Keep QA_TEST_REPORT.md open for reference
+
+P0 TESTS - Multi-Pane Contextual Sidebar:
+[ ] Test 1: CWD Tracking (cd /tmp → sidebar updates)
+[ ] Test 2: Project Root Detection (cd src → sidebar stays at root)
+[ ] Test 3: Pane Indicators (split → click indicators → focus switches)
+[ ] Test 4: Async Directory Loading (cd /usr/bin → no UI freeze)
+
+P1 TESTS - Scrollback & Text Selection:
+[ ] Test 5: Scrollback Buffer (scroll up/down in terminal)
+[ ] Test 6: Text Selection (click-drag, double-click, triple-click, copy)
+
+P2 TESTS - Command Palette:
+[ ] Test 7: Opening/Closing (Cmd+P → ESC)
+[ ] Test 8: Fuzzy Search (type "split", "tab")
+[ ] Test 9: Command Execution (New Tab, Split, Toggle Sidebar)
+
+P2 TESTS - Tab Drag-Drop:
+[ ] Test 10: Tab Reordering (drag tab → ghost preview → drop)
+
+PERFORMANCE CHECKS:
+[ ] Startup time: _____ seconds (target: < 2s)
+[ ] Terminal responsiveness: Excellent / Good / Sluggish
+[ ] Sidebar loading: _____ seconds (target: < 2s)
+[ ] UI frame rate: Smooth / Occasional drops / Choppy
+
+STABILITY CHECKS:
+[ ] Crashes: _____ (target: 0)
+[ ] Memory usage (Activity Monitor): _____ MB
+[ ] CPU usage (idle): _____ % (target: < 5%)
+[ ] CPU usage (active): _____ % (target: < 30%)
+
+AFTER TESTING:
+[ ] Complete test report summary section
+[ ] Document any bugs with severity (Critical/High/Medium/Low)
+[ ] Take screenshots of issues
+[ ] Check logs: cat qa_logs/vibeterm_*.log
+[ ] Check crash reports: open ~/Library/Logs/DiagnosticReports/
+[ ] Archive results: tar -czf qa_results_$(date +%Y%m%d).tar.gz qa_logs/
+
+FINAL DECISION:
+[ ] Total tests passed: _____ / 10
+[ ] Overall status: Ready for Release / Needs Fixes / Major Issues
+[ ] Release recommendation: _______________________________
+
+═══════════════════════════════════════════════════════════════════════
+
+QUICK REFERENCE:
+
+Launch: ./target/release/vibeterm
+Debug:  RUST_LOG=debug ./target/release/vibeterm
+
+Shortcuts:
+- Cmd+T: New Tab
+- Cmd+D: Split Horizontal
+- Cmd+P: Command Palette
+- Cmd+B: Toggle Sidebar
+- Cmd+C: Copy (when text selected)
+
+Files:
+- Test Plan:     QA_TEST_REPORT.md
+- Shortcuts:     QA_SHORTCUTS.md
+- Full Guide:    QA_TESTING_GUIDE.md
+- Summary:       QA_SUMMARY.md
+- Pre-flight:    ./run_qa_tests.sh
+
+═══════════════════════════════════════════════════════════════════════
+
+Estimated Time: 30-45 minutes
+Prepared: 2026-01-26
+Status: ✅ Ready to begin
+

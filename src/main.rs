@@ -4,8 +4,11 @@
 
 mod app;
 mod config;
+mod directory_scanner;
 mod layout;
 mod menu;
+mod project;
+mod pty_tracker;
 mod theme;
 mod ui;
 
