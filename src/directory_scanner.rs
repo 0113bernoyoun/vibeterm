@@ -52,8 +52,8 @@ pub fn scan_directory(root: &PathBuf, max_depth: usize, max_files: usize) -> Vec
                 .unwrap_or("?")
                 .to_string();
 
-            // Skip hidden files (starting with .) except .git
-            if name.starts_with('.') && name != ".git" {
+            // Skip hidden files (starting with .)
+            if name.starts_with('.') {
                 continue;
             }
 
@@ -173,7 +173,7 @@ mod tests {
         let entries = scan_directory(&root, 10, 1000);
 
         // No hidden directories or files should be present
-        let has_hidden = entries.iter().any(|e| e.name.starts_with('.') && e.name != ".git");
+        let has_hidden = entries.iter().any(|e| e.name.starts_with('.'));
         assert!(!has_hidden, "Hidden files/dirs should be excluded");
     }
 

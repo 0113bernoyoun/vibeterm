@@ -27,6 +27,8 @@ dirs = "5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 fuzzy-matcher = "0.3"
+arboard = { version = "3", features = ["image-data"] }
+image = "0.25"
 
 # Native macOS menu bar
 muda = "0.15"

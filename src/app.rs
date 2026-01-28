@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use arboard::Clipboard;
 use egui::{CentralPanel, Context, Event, Frame, ImeEvent, Key, SidePanel, TopBottomPanel, Widget};
 use egui_term::{BackendCommand, BackendSettings, PtyEvent, TerminalBackend, TerminalView};
 use tokio::runtime::Runtime;
@@ -725,8 +726,114 @@ impl VibeTermApp {
             if i.key_pressed(Key::Tab) && modifiers.ctrl && modifiers.shift {
                 self.workspaces[self.active_workspace].focus_prev();
             }
+
+            // Cmd+V: Smart paste (images or text)
+            if i.key_pressed(Key::V) && modifiers.command && !modifiers.shift {
+                self.handle_smart_paste();
+            }
         });
+
+        // Shift+Enter: Insert newline in terminal
+        // Handle this AFTER the input closure to prevent the terminal from also processing Enter
+        if ctx.input(|i| i.key_pressed(Key::Enter)) && modifiers.shift && !modifiers.command && !modifiers.ctrl {
+            if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
+                let focused = ws.focused_pane;
+                if let Some(content) = ws.get_content_mut(focused) {
+                    if let TabContent::Terminal(terminal) = content {
+                        // Send a proper newline character to the terminal
+                        terminal.backend.process_command(
+                            BackendCommand::Write(b"\n".to_vec())
+                        );
+                    }
+                }
+            }
+
+            // Consume the Enter event to prevent the terminal from processing it
+            ctx.input_mut(|i| {
+                i.events.retain(|e| !matches!(e, Event::Key { key: Key::Enter, pressed: true, .. }));
+            });
+        }
     }
+
+    /// Handle smart paste: Try image first, then fall back to text
+    fn handle_smart_paste(&mut self) {
+        match Clipboard::new() {
+            Ok(mut clipboard) => {
+                // Try to get image first
+                if let Ok(img_data) = clipboard.get_image() {
+                    log::info!("Pasting image from clipboard");
+
+                    // Generate unique filename with timestamp
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+
+                    // Use home directory for better Unicode support
+                    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+                    let file_path = home.join(format!(".vibeterm_paste_{}.png", timestamp));
+                    let file_path_str = file_path.to_string_lossy().to_string();
+
+                    // Convert arboard ImageData to image crate format and save
+                    let img = image::RgbaImage::from_raw(
+                        img_data.width as u32,
+                        img_data.height as u32,
+                        img_data.bytes.into_owned(),
+                    );
+
+                    if let Some(img) = img {
+                        match img.save(&file_path) {
+                            Ok(_) => {
+                                log::info!("Image saved to {}", file_path_str);
+                                // Send [image: path] marker to the terminal
+                                if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
+                                    let focused = ws.focused_pane;
+                                    if let Some(content) = ws.get_content_mut(focused) {
+                                        if let TabContent::Terminal(terminal) = content {
+                                            let marker = format!("[image: {}]\n", file_path_str);
+                                            terminal.backend.process_command(
+                                                BackendCommand::Write(marker.into_bytes())
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to save clipboard image: {}", e);
+                            }
+                        }
+                    } else {
+                        log::error!("Failed to convert clipboard image data to RgbaImage");
+                    }
+                    return; // Image handled, don't try text
+                }
+
+                // No image, try text
+                if let Ok(text) = clipboard.get_text() {
+                    log::info!("Pasting text from clipboard: {} chars", text.len());
+                    self.send_text_to_terminal(&text);
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to access clipboard: {}", e);
+            }
+        }
+    }
+
+    /// Send text to the focused terminal
+    fn send_text_to_terminal(&mut self, text: &str) {
+        if let Some(ws) = self.workspaces.get_mut(self.active_workspace) {
+            let focused = ws.focused_pane;
+            if let Some(content) = ws.get_content_mut(focused) {
+                if let TabContent::Terminal(terminal) = content {
+                    terminal.backend.process_command(
+                        BackendCommand::Write(text.to_string().into_bytes())
+                    );
+                }
+            }
+        }
+    }
+
 
     /// Handle IME (Input Method Editor) events for Korean/Japanese/Chinese input
     fn handle_ime_events(&mut self, ctx: &Context) {
@@ -742,7 +849,8 @@ impl VibeTermApp {
             if let Event::Ime(ime_event) = event {
                 match ime_event {
                     ImeEvent::Enabled => {
-                        self.ime_composing = true;
+                        // Don't set composing here - wait for actual preedit text
+                        // This prevents false positives that drop all text events
                     }
                     ImeEvent::Preedit(text) => {
                         self.ime_composing = !text.is_empty();
@@ -1248,6 +1356,7 @@ impl VibeTermApp {
                 for (pane_id, rect) in &layout.pane_rects {
                     if rect.contains(pos) && *pane_id != focused_pane {
                         self.workspaces[self.active_workspace].focused_pane = *pane_id;
+                        ui.ctx().request_repaint(); // Immediate repaint with new focus
                         break;
                     }
                 }
@@ -1562,9 +1671,15 @@ impl eframe::App for VibeTermApp {
             }
         }
 
-        // Request repaint at reasonable interval for terminal updates and cursor blink
-        // 50ms = 20fps idle rate, sufficient for cursor blink without burning CPU
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        // Dynamic repaint rate: immediate when user is typing, idle rate for cursor blink
+        // Track if there's recent user input
+        let has_recent_input = ctx.input(|i| !i.events.is_empty() || i.pointer.any_down());
+
+        if has_recent_input {
+            ctx.request_repaint(); // Immediate repaint for responsive input
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50)); // Idle rate for cursor blink
+        }
 
         // Tab bar (top)
         TopBottomPanel::top("tab_bar")
