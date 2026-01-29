@@ -4,7 +4,7 @@
 
 - **명칭:** VibeTerm (The Terminal for Vibe Coding)
 - **개발 환경:** macOS (Apple Silicon 및 Intel)
-- **현재 버전:** v0.7.0 (Smart Context Management)
+- **현재 버전:** v0.7.1 (Preferences Window)
 
 ### 핵심 철학 (Core Philosophy)
 
@@ -115,6 +115,68 @@ pub enum LayoutNode<T> {
 
 ## 4. 구현 상태
 
+### ✅ v0.7.1 완료 (Preferences Window & Documentation)
+
+#### Preferences Window Implementation
+- [x] 5개 탭 (General, Appearance, Terminal, File Tree, Advanced)
+- [x] iTerm2 스타일 UI (좌측 탭 바, 우측 콘텐츠)
+- [x] 모든 색상 설정 (UI + ANSI 16색)
+- [x] 폰트 크기 슬라이더
+- [x] Cancel/Apply/Save 버튼
+- [x] 실시간 색상 미리보기
+- [x] 헥스 색상 입력 검증
+- [x] 모달 오버레이 (Esc/Cmd+W로 닫기)
+- [x] `~/.config/vibeterm/config.toml` 저장
+
+#### Documentation Updates (v0.7.1)
+- [x] **PREFERENCES_GUIDE.md** (1000줄+)
+  - 모든 5개 탭 설명 및 예제
+  - 설정 파일 참조
+  - 일반적인 작업 (테마 변경, 폰트 조정, 색상 커스터마이징)
+  - 다양한 시스템을 위한 성능 팁
+  - 문제 해결 섹션
+- [x] **PERFORMANCE_OPTIMIZATION.md** (800줄+)
+  - 메모리 프로파일링 및 예상 사용량
+  - 7가지 최적화 전략
+  - GPU 가속 상태 및 로드맵
+  - 경쟁 제품과의 비교 (iTerm2, Ghostty, Terminal.app)
+  - 프로파일링 도구 및 모니터링
+  - 성능 문제 해결
+  - 벤치마크 및 Phase 3 대상
+- [x] **README.md** 문서 링크 추가
+- [x] **SHORTCUTS.md** Preferences 섹션 추가
+- [x] **CHANGELOG.md** v0.7.1 항목 추가
+
+---
+
+### ✅ v0.7.1 완료 (Preferences Window)
+
+#### Preferences Window (iTerm2 스타일)
+- [x] **완전한 Preferences 인터페이스** 5개 탭 섹션
+  - General: 폰트 크기, 레이아웃 치수, 시작 동작
+  - Appearance: 헥스 입력이 있는 UI 색상 커스터마이징
+  - Terminal: ANSI 16색 팔레트 편집
+  - File Tree: 사이드바 구성 및 무시 패턴
+  - Advanced: 컨텍스트 엔진 및 성능 설정
+- [x] **대화형 UI 요소**:
+  - 헥스 입력 필드가 있는 색상 미리보기
+  - 숫자 값용 슬라이더 (시각적 피드백)
+  - 부울 설정용 체크박스
+  - 패턴 구성용 텍스트 영역
+- [x] **빠른 작업 버튼**:
+  - Cancel: 변경사항 폐기
+  - Apply: 즉시 적용 (저장 없음)
+  - Save: 적용 및 `~/.config/vibeterm/config.toml`에 저장
+- [x] **키보드 단축키**:
+  - `Cmd+,`: Preferences 열기 (표준 macOS)
+  - `Esc`: Preferences 닫기
+  - `Cmd+W`: Preferences 닫기
+- [x] **모달 오버레이** 반투명 배경
+- [x] **반응형 레이아웃** 스크롤 가능한 콘텐츠 영역
+- [x] **색상 변경의 실시간 미리보기**
+
+---
+
 ### ✅ v0.6.0 완료
 
 #### Multi-Pane Contextual Sidebar
@@ -152,7 +214,7 @@ pub enum LayoutNode<T> {
 
 ### ✅ v0.7.0 완료 (Smart Context Management)
 
-#### Context Management System
+#### Context Management System (v0.7.0)
 - [x] **파일 감시 서비스**
   - notify 6.1 크레이트로 파일 시스템 실시간 감지
   - 200ms 디바운싱으로 성능 최적화
@@ -594,7 +656,9 @@ RUST_LOG=info cargo run 2>&1 | tee vibeterm.log
 - ✅ **19개 단위 테스트** (v0.7.0)
 
 ### 다음 우선순위 작업 (v0.8.0+)
-1. **PTY Interception** - 실시간 에러 감지 및 패턴 매칭
-2. **LSP 통합** - Semantic Search (`@`-keyword 심볼 검색)
-3. **Ghost Text & Diff Preview** - AI 제안 코드 시각화
-4. **MCP 통신** - Model Context Protocol 지원
+1. **Ghost Text & Diff Preview** - AI 제안 코드 시각화
+2. **One-tap Apply** - `y` 키로 제안 즉시 적용
+3. **AI Inspector Panel** - 우측 패널에서 실시간 AI 작업 모니터링
+4. **PTY Interception** - 실시간 에러 감지 및 패턴 매칭
+5. **MCP 통신** - Model Context Protocol 지원
+6. **LSP 통합** - Semantic Search (`@`-keyword 심볼 검색, 선택적)
