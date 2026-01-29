@@ -6,8 +6,10 @@ mod tab_bar;
 mod sidebar;
 mod status_bar;
 mod command_palette;
+mod preferences;
 
 pub use tab_bar::{TabBar, TabInfo};
 pub use sidebar::{Sidebar, FileEntry, SidebarResponse};
 pub use status_bar::StatusBar;
 pub use command_palette::CommandPalette;
+pub use preferences::{PreferencesWindow, PreferencesTab, PreferencesResponse, PreferencesCommand};

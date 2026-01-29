@@ -2,7 +2,7 @@
 
 **Your flow, uninterrupted.**
 
-![Version](https://img.shields.io/badge/version-0.7.0-blue)
+![Version](https://img.shields.io/badge/version-0.7.1-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 
@@ -67,9 +67,10 @@ You're in the zone. Ideas are flowing. The last thing you need is to break your 
 - Async PTY communication
 
 ### Make it Yours
-- Dark brown theme (fully customizable)
+- Dark brown theme (fully customizable via Preferences window)
 - CJK font support (Korean/Japanese/Chinese)
 - IME input support
+- Advanced Preferences window (iTerm2 style) for full customization
 
 ## Roadmap
 
@@ -127,7 +128,7 @@ cargo run --release
 | `Cmd+B` | Toggle sidebar |
 | `Cmd+Shift+C` | Collapse all directories in sidebar |
 | `Cmd+Shift+E` | Expand all directories in sidebar |
-| `Cmd+,` | Open preferences |
+| `Cmd+,` | Open preferences window |
 
 ### Command Palette
 | Shortcut | Action |
@@ -229,6 +230,19 @@ VibeTerm automatically detects project roots by looking for:
 
 ## Configuration
 
+### Quick Configuration
+
+Open Preferences with `Cmd+,` to customize:
+- **Font sizes** (terminal and UI)
+- **Colors** (UI and ANSI terminal palette)
+- **Sidebar** (file tree limits, ignore patterns)
+- **Layout** (sidebar width, tab/status bar heights)
+- **Advanced** (context engine, performance options)
+
+See [PREFERENCES_GUIDE.md](/Users/bernocrest/Desktop/dev/projects/vibeterm/PREFERENCES_GUIDE.md) for detailed settings documentation.
+
+### Manual Configuration
+
 Config file: `~/.config/vibeterm/config.toml`
 
 ```toml
@@ -241,8 +255,14 @@ text_dim = "#A0968A"
 border = "#4A2E28"
 
 [font]
-family = "JetBrains Mono"
-size = 13.0
+terminal_size = 14.0
+ui_size = 12.0
+
+[ui]
+sidebar_width = 220.0
+show_sidebar = true
+max_files = 1000
+max_depth = 10
 ```
 
 ## Tech Stack
@@ -255,6 +275,13 @@ size = 13.0
 | Menu | muda | 0.15 |
 | Config | serde + toml | 1.0 / 0.8 |
 | Async | tokio | 1.0 |
+
+## Documentation
+
+- **[PREFERENCES_GUIDE.md](./PREFERENCES_GUIDE.md)** - Complete Preferences window customization guide
+- **[PERFORMANCE_OPTIMIZATION.md](./PERFORMANCE_OPTIMIZATION.md)** - Memory and performance tuning
+- **[SHORTCUTS.md](./SHORTCUTS.md)** - All keyboard shortcuts reference
+- **[CHANGELOG.md](./CHANGELOG.md)** - Version history and updates
 
 ## Known Limitations
 

@@ -347,6 +347,18 @@ impl<T> LayoutNode<T> {
             }
         }
     }
+
+    /// Visit all nodes with a mutable closure
+    pub fn visit_mut<F>(&mut self, f: &mut F)
+    where
+        F: FnMut(&mut Self),
+    {
+        f(self);
+        if let LayoutNode::Split { first, second, .. } = self {
+            first.visit_mut(f);
+            second.visit_mut(f);
+        }
+    }
 }
 
 // ============================================================================

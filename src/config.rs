@@ -138,6 +138,14 @@ pub struct UiConfig {
     pub show_sidebar: bool,
     /// Enable CWD polling for terminal tracking (disable for performance)
     pub enable_cwd_polling: bool,
+    /// Show hidden files in file tree
+    pub show_hidden_files: bool,
+    /// Maximum number of files to display in file tree
+    pub max_files: usize,
+    /// Maximum depth for directory traversal
+    pub max_depth: usize,
+    /// Patterns to ignore in file tree (e.g., ".git", "target")
+    pub file_tree_ignore_patterns: Vec<String>,
 }
 
 impl Default for UiConfig {
@@ -148,43 +156,78 @@ impl Default for UiConfig {
             status_bar_height: 20.0,
             show_sidebar: true,
             enable_cwd_polling: true,
+            show_hidden_files: false,
+            max_files: 1000,
+            max_depth: 10,
+            file_tree_ignore_patterns: vec![
+                ".git".to_string(),
+                "target".to_string(),
+                "node_modules".to_string(),
+            ],
         }
     }
 }
 
 impl Config {
-    /// Load config from file or return default
-    pub fn load() -> Self {
-        if let Some(path) = Self::config_path() {
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(config) = toml::from_str(&content) {
-                        log::info!("Loaded config from {:?}", path);
-                        return config;
-                    }
-                }
-            }
-        }
-        Self::default()
-    }
-
-    /// Save config to file
-    #[allow(dead_code)]
-    pub fn save(&self) -> anyhow::Result<()> {
-        if let Some(path) = Self::config_path() {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let content = toml::to_string_pretty(self)?;
-            std::fs::write(&path, content)?;
-            log::info!("Saved config to {:?}", path);
-        }
-        Ok(())
+    /// Get config directory path
+    pub fn config_dir() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".config/vibeterm")
     }
 
     /// Get config file path
-    fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|p| p.join("vibeterm").join("config.toml"))
+    pub fn config_path() -> PathBuf {
+        Self::config_dir().join("config.toml")
+    }
+
+    /// Load config from file or return default
+    pub fn load() -> Self {
+        let path = Self::config_path();
+
+        if !path.exists() {
+            log::info!("Config file not found, using defaults");
+            return Self::default();
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                match toml::from_str::<Config>(&contents) {
+                    Ok(config) => {
+                        log::info!("Config loaded from {:?}", path);
+                        config
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to parse config: {}. Using defaults.", e);
+                        Self::default()
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to read config: {}. Using defaults.", e);
+                Self::default()
+            }
+        }
+    }
+
+    /// Save config to file
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::config_path();
+        let dir = Self::config_dir();
+
+        // Create directory
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+
+        // Serialize to TOML
+        let toml_string = toml::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        // Write to file
+        std::fs::write(&path, toml_string)
+            .map_err(|e| format!("Failed to write config: {}", e))?;
+
+        log::info!("Config saved to {:?}", path);
+        Ok(())
     }
 }
 
@@ -231,6 +274,13 @@ pub struct RuntimeTheme {
     pub bright_magenta: Color32,
     pub bright_cyan: Color32,
     pub bright_white: Color32,
+}
+
+impl RuntimeTheme {
+    /// Create RuntimeTheme from ThemeConfig reference
+    pub fn from_config(config: &ThemeConfig) -> Self {
+        Self::from(config)
+    }
 }
 
 impl From<&ThemeConfig> for RuntimeTheme {

@@ -1,5 +1,14 @@
 # VibeTerm Keyboard Shortcuts
 
+## Preferences & Settings
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+,` | Open Preferences window |
+| `Esc` (in Preferences) | Close Preferences |
+
+For detailed preferences documentation, see [PREFERENCES_GUIDE.md](./PREFERENCES_GUIDE.md).
+
 ## Tab Management
 
 | Shortcut | Action |
@@ -88,6 +97,5 @@
 ### Future Shortcuts (not yet implemented)
 - `Cmd+P`: Quick file picker
 - `Cmd+Shift+F`: Global search
-- `Cmd+,`: Settings/preferences
 - `F11`: Toggle fullscreen
 - `Cmd+K`: Clear terminal

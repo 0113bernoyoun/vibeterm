@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2025-01-29
+
+### Added
+
+#### Preferences Window (iTerm2 Style)
+- **Complete preferences interface** with 5 tabbed sections
+  - General: Font sizes, layout dimensions, startup behavior
+  - Appearance: UI color customization with hex input
+  - Terminal: ANSI 16-color palette editing
+  - File Tree: Sidebar configuration and ignore patterns
+  - Advanced: Context engine and performance settings
+- **Interactive UI elements**:
+  - Color preview squares with hex input fields
+  - Sliders for numeric values with visual feedback
+  - Checkboxes for boolean settings
+  - Text areas for pattern configuration
+- **Quick action buttons**:
+  - Cancel: Discard changes
+  - Apply: Apply immediately (no save)
+  - Save: Apply and persist to `~/.config/vibeterm/config.toml`
+- **Keyboard shortcuts**:
+  - `Cmd+,`: Open preferences (standard macOS)
+  - `Esc`: Close preferences
+  - `Cmd+W`: Close preferences
+- **Modal overlay** with semi-transparent background
+- **Responsive layout** with scrollable content area
+- **Real-time preview** of color changes
+
+#### Documentation
+- **PREFERENCES_GUIDE.md**: Complete user guide for Preferences window
+  - All 5 tabs explained with examples
+  - Configuration file reference
+  - Common tasks (change theme, adjust fonts, customize colors)
+  - Performance tips for different machines
+  - Troubleshooting section
+  - ~1000 lines of comprehensive documentation
+- **PERFORMANCE_OPTIMIZATION.md**: Memory and performance tuning guide
+  - Memory profiling and expected usage
+  - 7 optimization strategies (scrollback, file tree, rendering, etc.)
+  - GPU acceleration status and roadmap
+  - Comparison with competitors (iTerm2, Ghostty, Terminal.app)
+  - Profiling tools and monitoring
+  - Troubleshooting performance issues
+  - Benchmarks and targets for Phase 3
+  - ~800 lines of technical documentation
+
+### Documentation Updates
+- **README.md**: Added links to new documentation files
+  - Updated Configuration section with Preferences reference
+  - Updated Features section to mention Preferences window
+  - Added Documentation section with links
+- **SHORTCUTS.md**: Added Preferences section with `Cmd+,` reference
+- **CHANGELOG.md**: This entry with v0.7.1 updates
+
+### Technical Details
+- New tabs structured in `src/ui/preferences.rs`:
+  - PreferencesWindow state management
+  - PreferencesTab enum for tab navigation
+  - PreferencesResponse for configuration changes
+  - Individual methods for each tab content
+- Integration with existing Config system
+- Full theme color support (all UI and ANSI colors)
+- Hex color parsing and validation
+- Change previewing before save
+
+### UI/UX
+- Professional iTerm2-style interface
+- Consistent monospace font throughout
+- Left-aligned tab sidebar with hover effects
+- Proper button grouping and alignment
+- Shadow effects and rounded corners (8px)
+- Minimum window size: 600x400
+- Default window size: 700x500
+
 ## [0.7.0] - 2025-01-26
 
 ### Added

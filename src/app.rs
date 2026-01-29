@@ -414,8 +414,8 @@ pub struct VibeTermApp {
     dragging_pane: Option<PaneDragState>,
     /// Tab being dragged
     dragging_tab: Option<TabDragState>,
-    /// Show preferences window
-    show_preferences: bool,
+    /// Preferences window
+    preferences_window: crate::ui::PreferencesWindow,
     /// IME is currently composing (preedit active)
     ime_composing: bool,
     /// Cached terminal theme (regenerated when config changes)
@@ -474,7 +474,7 @@ impl VibeTermApp {
         let project_root = std::env::current_dir().ok();
 
         let mut app = Self {
-            config,
+            config: config.clone(),
             theme,
             workspaces: vec![workspace],
             active_workspace: 0,
@@ -487,7 +487,7 @@ impl VibeTermApp {
             dragging_divider: None,
             dragging_pane: None,
             dragging_tab: None,
-            show_preferences: false,
+            preferences_window: crate::ui::PreferencesWindow::new(config.clone()),
             ime_composing: false,
             cached_terminal_theme,
             dir_load_tx,
@@ -693,7 +693,7 @@ impl VibeTermApp {
 
             // Cmd+,: Preferences
             if i.key_pressed(Key::Comma) && modifiers.command {
-                self.show_preferences = true;
+                self.preferences_window.open(self.config.clone());
             }
 
             // Cmd+1-9: Switch tabs
@@ -901,7 +901,7 @@ impl VibeTermApp {
                 MenuAction::SplitHorizontal => self.split_pane_horizontal(),
                 MenuAction::SplitVertical => self.split_pane_vertical(),
                 MenuAction::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
-                MenuAction::Preferences => self.show_preferences = true,
+                MenuAction::Preferences => self.preferences_window.open(self.config.clone()),
                 MenuAction::About => {
                     log::info!("About VibeTerm v{}", env!("CARGO_PKG_VERSION"));
                 }
@@ -1255,80 +1255,6 @@ impl VibeTermApp {
         }
     }
 
-    /// Show preferences window
-    fn show_preferences_window(&mut self, ctx: &Context) {
-        egui::Window::new("Preferences")
-            .open(&mut self.show_preferences)
-            .resizable(true)
-            .default_size([500.0, 400.0])
-            .show(ctx, |ui| {
-                ui.heading("Theme Colors");
-                ui.separator();
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Background:");
-                        ui.text_edit_singleline(&mut self.config.theme.background);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Text:");
-                        ui.text_edit_singleline(&mut self.config.theme.text);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Primary:");
-                        ui.text_edit_singleline(&mut self.config.theme.primary);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Border:");
-                        ui.text_edit_singleline(&mut self.config.theme.border);
-                    });
-
-                    ui.separator();
-                    ui.heading("Terminal Colors");
-
-                    ui.horizontal(|ui| {
-                        ui.label("Black:");
-                        ui.text_edit_singleline(&mut self.config.theme.black);
-                        ui.label("Red:");
-                        ui.text_edit_singleline(&mut self.config.theme.red);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Green:");
-                        ui.text_edit_singleline(&mut self.config.theme.green);
-                        ui.label("Yellow:");
-                        ui.text_edit_singleline(&mut self.config.theme.yellow);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Blue:");
-                        ui.text_edit_singleline(&mut self.config.theme.blue);
-                        ui.label("Magenta:");
-                        ui.text_edit_singleline(&mut self.config.theme.magenta);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Cyan:");
-                        ui.text_edit_singleline(&mut self.config.theme.cyan);
-                        ui.label("White:");
-                        ui.text_edit_singleline(&mut self.config.theme.white);
-                    });
-
-                    ui.separator();
-
-                    if ui.button("Save & Apply").clicked() {
-                        // Update runtime theme
-                        self.theme = RuntimeTheme::from(&self.config.theme);
-                        self.cached_terminal_theme = theme::get_terminal_theme(&self.config);
-                        // Apply to egui
-                        crate::theme::apply_theme(&self.ctx, &self.theme);
-                        // Save to file
-                        if let Err(e) = self.config.save() {
-                            log::error!("Failed to save config: {}", e);
-                        }
-                    }
-
-                    ui.label("Config file: ~/.config/vibeterm/config.toml");
-                });
-            });
-    }
 
     /// Render panes using the binary split tree layout
     fn render_panes(&mut self, ui: &mut egui::Ui) {
@@ -1628,9 +1554,20 @@ impl eframe::App for VibeTermApp {
         // Process context manager events
         self.process_context_events();
 
-        // Show preferences window if open
-        if self.show_preferences {
-            self.show_preferences_window(ctx);
+        // Show preferences window (spawns deferred viewport)
+        let pref_response = self.preferences_window.show(ctx, &self.config, &self.theme);
+
+        if let Some(new_config) = pref_response.apply_config {
+            self.config = new_config.clone();
+            self.theme = RuntimeTheme::from(&new_config.theme);
+            self.cached_terminal_theme = theme::get_terminal_theme(&new_config);
+            crate::theme::apply_theme(ctx, &self.theme);
+        }
+
+        if pref_response.save_config {
+            if let Err(e) = self.config.save() {
+                log::error!("Failed to save config: {}", e);
+            }
         }
 
         // Show command palette and execute commands
@@ -1655,7 +1592,7 @@ impl eframe::App for VibeTermApp {
                     self.sidebar_visible = !self.sidebar_visible;
                 }
                 "settings" => {
-                    self.show_preferences = true;
+                    self.preferences_window.open(self.config.clone());
                 }
                 "next_tab" => {
                     if self.active_workspace < self.workspaces.len() - 1 {
